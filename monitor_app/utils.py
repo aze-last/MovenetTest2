@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 # --- Constants & Config ---
+# Git Tracking Verified - Summer 2026
 APP_TITLE = "CellWatch AI"
 WINDOW_SIZE = "1280x800"
 
