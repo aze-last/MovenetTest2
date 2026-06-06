@@ -1,0 +1,56 @@
+{
+  "name": "cellwatch-ai-agent-team",
+  "mode": "manual-session",
+  "sharedState": {
+    "tasksPath": ".agent-team/tasks",
+    "mailboxPath": ".agent-team/mailbox",
+    "templatesPath": ".agent-team/templates",
+    "decisionsPath": ".agent-team/decisions.md"
+  },
+  "policies": {
+    "defaultIsolation": "shared-workspace-bounded-paths",
+    "verificationRequired": true,
+    "riskyPaths": [
+      "monitor_app/app_state.db",
+      "monitor_app/auth.py",
+      "monitor_app/profile_store.py"
+    ]
+  },
+  "workers": [
+    {
+      "id": "coordinator@cellwatch-ai",
+      "role": "Coordinator",
+      "template": "../../GEMINI.md",
+      "allowedPaths": [
+        ".agent-team",
+        "GEMINI.md",
+        "README.md",
+        "monitor_app/main.py"
+      ]
+    },
+    {
+      "id": "logic-reviewer@cellwatch-ai",
+      "role": "Logic-Reviewer",
+      "template": "logic-reviewer.md",
+      "allowedPaths": [
+        "monitor_app/ai_engine.py",
+        "monitor_app/incident_record.py",
+        "monitor_app/incidents.py",
+        "monitor_app/movenet_tuner.py",
+        "monitor_app/utils.py"
+      ]
+    },
+    {
+      "id": "ui-ux-auditor@cellwatch-ai",
+      "role": "UI/UX Auditor / Redesigner",
+      "template": "ui-ux-auditor-redesigner.md",
+      "allowedPaths": [
+        "monitor_app/dashboard.py",
+        "monitor_app/settings.py",
+        "monitor_app/camera_view.py",
+        "monitor_app/reports.py",
+        "monitor_app/assets"
+      ]
+    }
+  ]
+}

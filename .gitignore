@@ -1,0 +1,47 @@
+# Virtual Environments
+.venv/
+.venv310/
+venv/
+ENV/
+__pycache__/
+
+# AI Models & Binaries
+*.pt
+*.onnx
+*.weights
+monitor_app/models/
+monitor_app/yolov8n.pt
+yolov8n-pose.pt
+yolov8n.pt
+
+# Video Recordings & Samples
+video/
+recordings/
+monitor_app/recordings/
+*.mp4
+*.avi
+*.mkv
+monitor_app/camera_view.zip
+
+# SQLite Databases
+*.db
+*.db-journal
+monitor_app/app_state.db
+monitor_app/incidents.db
+
+# IDE & OS Settings
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs & Temporary Files
+runs/
+monitor_app/runs/
+*.log
+*.tmp
+debug_imports.py
+tmp_check_gpu.py
+installed_packages.txt
+packages_offile/
+packages_offline/
