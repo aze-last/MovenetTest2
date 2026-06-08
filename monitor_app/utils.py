@@ -4,8 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 # --- Constants & Config ---
-# Workflow Test: Summer 2026 Session
-APP_TITLE = "CellWatch AI v1.1"
+APP_TITLE = "CellWatch AI"
 WINDOW_SIZE = "1280x800"
 
 # Colors (Dark Theme)
