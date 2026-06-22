@@ -168,6 +168,17 @@ class CameraManagementDialog(ctk.CTkToplevel):
             messagebox.showwarning("Incomplete", "Please provide both name and source.")
             return
         
+        # Check for duplicate source
+        existing = profile_store.list_cameras()
+        for cam in existing:
+            if cam["source"] == src and cam["camera_id"] != self.selected_cam_id:
+                messagebox.showwarning(
+                    "Duplicate Source",
+                    f"Source '{src}' is already used by camera '{cam['name']}'.\n"
+                    "Two cameras cannot share the same device index or URL."
+                )
+                return
+
         try:
             if self.selected_cam_id:
                 profile_store.update_camera(self.selected_cam_id, name, src)
@@ -384,12 +395,10 @@ class CameraFeedWidget(ttk.Frame):
         if self.running:
             return
         self.running = True
+        self._consecutive_failures = 0
 
         if CV2_AVAILABLE and self.source is not None:
-            self.cap = cv2.VideoCapture(self.source)
-            if isinstance(self.source, int):
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self._open_capture()
 
             # Start worker thread for real cameras
             self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
@@ -399,17 +408,56 @@ class CameraFeedWidget(ttk.Frame):
         utils.GlobalState.register_camera(self.camera_id)
         self.update_loop()
 
+    def _open_capture(self):
+        """Open (or reopen) the video capture with fallback backends."""
+        if self.cap:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+
+        src = self.source
+        # Try MSMF first (Windows default), then DirectShow fallback
+        backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY] if isinstance(src, int) else [cv2.CAP_ANY]
+        for backend in backends:
+            try:
+                cap = cv2.VideoCapture(src, backend)
+                if cap.isOpened():
+                    if isinstance(src, int):
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    self.cap = cap
+                    self._consecutive_failures = 0
+                    print(f"Camera {self.camera_id} opened on backend {backend}")
+                    return
+                cap.release()
+            except Exception as e:
+                print(f"Camera {self.camera_id} backend {backend} failed: {e}")
+        print(f"Camera {self.camera_id}: could not open source '{src}'")
+
     def _worker_loop(self):
         """Background thread for capturing and processing frames."""
+        MAX_CONSECUTIVE_FAILURES = 60  # ~2 seconds of failures before reconnect
         while self.running:
             if not self.cap or not self.cap.isOpened():
-                time.sleep(0.1)
+                # Try to reconnect every 3 seconds
+                time.sleep(3.0)
+                if self.running:
+                    print(f"Camera {self.camera_id}: attempting reconnect...")
+                    self._open_capture()
                 continue
 
             ret, raw_frame = self.cap.read()
             if not ret:
-                time.sleep(0.01)
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"Camera {self.camera_id}: {self._consecutive_failures} consecutive read failures, reconnecting...")
+                    self._open_capture()
+                time.sleep(0.03)
                 continue
+
+            self._consecutive_failures = 0
 
             # Process AI in the background
             global _pose_engine

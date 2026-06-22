@@ -273,8 +273,8 @@ class IncidentReviewDetail(ctk.CTkFrame):
             "retention": tk.StringVar(value="-"),
         }
 
-        self.grid_columnconfigure(0, weight=8)
-        self.grid_columnconfigure(1, weight=3)
+        self.grid_columnconfigure(0, weight=8, uniform="incidents_cols")
+        self.grid_columnconfigure(1, weight=3, uniform="incidents_cols")
         self.grid_rowconfigure(0, weight=1)
 
         self.create_widgets()
@@ -322,8 +322,11 @@ class IncidentReviewDetail(ctk.CTkFrame):
             corner_radius=22,
             border_width=1,
             border_color=PALETTE["border"],
+            width=640,
+            height=360,
         )
         self.video_player_container.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 14))
+        self.video_player_container.grid_propagate(False)
         self.video_player_container.grid_columnconfigure(0, weight=1)
         self.video_player_container.grid_rowconfigure(0, weight=1)
 
@@ -669,11 +672,23 @@ class IncidentReviewDetail(ctk.CTkFrame):
     def _display_frame(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        width = self.video_label.winfo_width()
-        height = self.video_label.winfo_height()
-        if width > 10 and height > 10:
-            frame = cv2.resize(frame, (width, height))
-            target_size = (width, height)
+        # Use parent container's dimensions to prevent feedback loop resizing
+        c_width = self.video_player_container.winfo_width()
+        c_height = self.video_player_container.winfo_height()
+        
+        # Account for video_label's grid padding (padx=14, pady=14 -> 28 total)
+        avail_w = c_width - 28
+        avail_h = c_height - 28
+
+        if avail_w > 10 and avail_h > 10:
+            # Preserve original aspect ratio
+            img_h, img_w = frame.shape[:2]
+            ratio = min(avail_w / img_w, avail_h / img_h)
+            new_w = max(1, int(img_w * ratio))
+            new_h = max(1, int(img_h * ratio))
+            
+            frame = cv2.resize(frame, (new_w, new_h))
+            target_size = (new_w, new_h)
         else:
             target_size = (frame.shape[1], frame.shape[0])
 

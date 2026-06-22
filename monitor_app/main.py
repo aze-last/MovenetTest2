@@ -52,7 +52,7 @@ except Exception as e:
 from monitor_app import utils, auth, camera_view, incidents, dashboard, settings, reports
 from monitor_app import profile_store
 
-class CellWatchApp(tk.Tk):
+class CellWatchApp(ctk.CTk):
     NAV_PALETTE = {
         "bar": "#111821",
         "bar_border": "#243648",
