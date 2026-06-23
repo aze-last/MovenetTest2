@@ -219,13 +219,19 @@ class CameraMonitorScreen(ttk.Frame):
 
         global _pose_engine, _yolo_engine
 
+        # --- Load persisted AI profile ---
+        ai_cfg = profile_store.get_ai_settings()
+        _profile = ai_cfg["active_profile"]
+        _custom_vals = ai_cfg["custom_settings"] if _profile == "custom" else None
+
         # --- motion-optimized engine (MoveNet + optional YOLO) ---
         if _pose_engine is None and AI_AVAILABLE and MotionOptimizedEngine is not None:
             try:
                 print("Using MotionOptimizedEngine (MoveNet + optional YOLO)...")
                 _pose_engine = MotionOptimizedEngine(
                     debug=False,
-                    sensitivity="high",
+                    sensitivity=_profile,
+                    custom_values=_custom_vals,
                     enable_yolo=True,
                     prefer_gpu=True,
                     force_gpu=True,
@@ -240,7 +246,7 @@ class CameraMonitorScreen(ttk.Frame):
         if _pose_engine is None and AI_AVAILABLE and BasicMotionEngine is not None:
             try:
                 print("Using BasicMotionEngine (motion-only, no TensorFlow)...")
-                _pose_engine = BasicMotionEngine(sensitivity="high")
+                _pose_engine = BasicMotionEngine(sensitivity=_profile)
             except Exception as e:
                 print(f"BasicMotionEngine init failed: {e}")
                 _pose_engine = None

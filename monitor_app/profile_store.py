@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import secrets
 import shutil
@@ -16,6 +17,18 @@ DEFAULT_PROFILE = {
     "system_name": "CellWatch AI",
     "company_name": "Institutional Monitoring Platform",
     "logo_path": "assets/logo.png",
+}
+
+DEFAULT_CUSTOM_SETTINGS = {
+    "conf_thr": 0.22,
+    "agg_thr": 180.0,
+    "active_thr": 90.0,
+    "alert_frames": 3,
+    "motion_threshold": 5000,
+    "motion_ratio": 0.010,
+    "yolo_knife_conf": 0.30,
+    "yolo_cell_conf": 0.30,
+    "yolo_fallback_conf": 0.50,
 }
 
 PASSWORD_ITERATIONS = 200000
@@ -155,6 +168,29 @@ def ensure_app_state():
                 "INSERT INTO cameras (name, source, is_active, created_at) VALUES (?, ?, 1, ?)",
                 (name, src, timestamp)
             )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_settings (
+            settings_id INTEGER PRIMARY KEY CHECK (settings_id = 1),
+            active_profile TEXT NOT NULL DEFAULT 'medium',
+            custom_settings_json TEXT,
+            updated_at TEXT,
+            updated_by TEXT
+        )
+        """
+    )
+
+    cursor.execute("SELECT COUNT(*) FROM ai_settings")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute(
+            """
+            INSERT INTO ai_settings (
+                settings_id, active_profile, custom_settings_json, updated_at, updated_by
+            ) VALUES (1, 'medium', ?, ?, 'system')
+            """,
+            (json.dumps(DEFAULT_CUSTOM_SETTINGS), _now()),
+        )
 
     conn.commit()
     conn.close()
@@ -660,3 +696,50 @@ def delete_camera(camera_id, actor_username=None):
         target_id=str(camera_id),
         details=f"Deleted camera '{name}' (ID {camera_id}).",
     )
+
+
+# ==========================================
+# AI SETTINGS PERSISTENCE
+# ==========================================
+def get_ai_settings():
+    """Return dict with active_profile and parsed custom_settings."""
+    ensure_app_state()
+    conn = _connect()
+    row = conn.execute(
+        "SELECT active_profile, custom_settings_json FROM ai_settings WHERE settings_id = 1"
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return {"active_profile": "medium", "custom_settings": DEFAULT_CUSTOM_SETTINGS.copy()}
+    custom = DEFAULT_CUSTOM_SETTINGS.copy()
+    if row["custom_settings_json"]:
+        try:
+            custom.update(json.loads(row["custom_settings_json"]))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {"active_profile": row["active_profile"], "custom_settings": custom}
+
+
+def save_ai_settings(active_profile, custom_settings=None, actor_username=None):
+    """Persist the selected profile and optional custom JSON blob."""
+    ensure_app_state()
+    custom_json = json.dumps(custom_settings) if custom_settings else None
+    conn = _connect()
+    conn.execute(
+        """
+        UPDATE ai_settings
+        SET active_profile = ?, custom_settings_json = ?, updated_at = ?, updated_by = ?
+        WHERE settings_id = 1
+        """,
+        (active_profile, custom_json, _now(), actor_username or "system"),
+    )
+    conn.commit()
+    conn.close()
+    record_audit_event(
+        actor_username=actor_username,
+        action_type="AI_SETTINGS_UPDATE",
+        target_type="AI_SETTINGS",
+        target_id="1",
+        details=f"Profile changed to '{active_profile}'.",
+    )
+

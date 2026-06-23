@@ -27,6 +27,58 @@ PALETTE = {
 }
 
 
+class CTkTooltip:
+    def __init__(self, widget, text):
+        # Bind to underlying tkinter widget if it's a CustomTkinter widget
+        self.widget = getattr(widget, "_label", widget)
+        self.text = text
+        self.tip_window = None
+        self.widget.bind("<Enter>", self.show_tip)
+        self.widget.bind("<Leave>", self.hide_tip)
+        self.widget.bind("<Button-1>", self.hide_tip)
+        self.widget.bind("<Destroy>", self.hide_tip, add="+")
+
+    def show_tip(self, event=None):
+        if self.tip_window or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 25
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        
+        frame = tk.Frame(
+            tw,
+            background="#202b38",
+            highlightbackground="#26384a",
+            highlightthickness=1
+        )
+        frame.pack()
+        
+        label = tk.Label(
+            frame,
+            text=self.text,
+            justify="left",
+            background="#202b38",
+            foreground="#f3f7fb",
+            font=("Segoe UI", 10),
+            wraplength=280,
+            padx=12,
+            pady=8
+        )
+        label.pack()
+
+    def hide_tip(self, event=None):
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            try:
+                tw.destroy()
+            except Exception:
+                pass
+
+
 class SettingsScreen(ctk.CTkFrame):
     def __init__(self, parent, current_user=None, on_profile_updated=None, mode="profile"):
         super().__init__(parent, fg_color="transparent")
@@ -340,6 +392,36 @@ class SettingsScreen(ctk.CTkFrame):
         self.account_tree.tag_configure("DISABLED", foreground=PALETTE["danger"])
 
     def _build_monitoring_section(self, row_index):
+        # ── Profile Definitions ──
+        self._profile_presets = {
+            "high": {
+                "conf_thr": 0.25, "agg_thr": 450.0, "active_thr": 140.0,
+                "alert_frames": 2, "motion_threshold": 4500, "motion_ratio": 0.009,
+                "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50,
+            },
+            "medium": {
+                "conf_thr": 0.22, "agg_thr": 180.0, "active_thr": 90.0,
+                "alert_frames": 3, "motion_threshold": 5000, "motion_ratio": 0.010,
+                "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50,
+            },
+            "low": {
+                "conf_thr": 0.18, "agg_thr": 700.0, "active_thr": 250.0,
+                "alert_frames": 5, "motion_threshold": 6000, "motion_ratio": 0.012,
+                "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50,
+            },
+        }
+        self._profile_descriptions = {
+            "high": "Designed for rapid detection of significant movement while maintaining stricter validation to reduce false aggression alerts.",
+            "medium": "Standard monitoring configuration. Balanced sensitivity for typical activity levels.",
+            "low": "Conservative monitoring mode designed to minimize false alerts by requiring stronger evidence before triggering detections.",
+            "custom": "User-configured threshold settings for MoveNet behavior tracking and YOLOv8 contraband detection.",
+        }
+
+        # ── Load persisted settings ──
+        ai_cfg = profile_store.get_ai_settings()
+        saved_profile = ai_cfg["active_profile"]
+        saved_custom = ai_cfg["custom_settings"]
+
         group = ctk.CTkFrame(self.main_view, fg_color=PALETTE["panel"], corner_radius=24, border_width=1, border_color=PALETTE["border"])
         group.grid(row=row_index, column=0, sticky="ew", padx=28, pady=(0, 28))
         group.grid_columnconfigure(0, weight=1)
@@ -347,26 +429,177 @@ class SettingsScreen(ctk.CTkFrame):
         ctk.CTkLabel(group, text="Monitoring Tuning", font=("Bahnschrift SemiBold", 24), text_color=PALETTE["text"], anchor="w").grid(row=0, column=0, sticky="w", padx=22, pady=(22, 6))
         ctk.CTkLabel(group, text="AI thresholds and confidence levels can be tuned here. Camera management is now handled directly via the Live Monitor [+] portal.", font=("Segoe UI", 12), text_color=PALETTE["muted"], justify="left", wraplength=820, anchor="w").grid(row=1, column=0, sticky="w", padx=22, pady=(0, 16))
 
-        self.slider_labels = {}
-        for offset, (label, default) in enumerate((("Motion Threshold", 0.70), ("Aggression Confidence", 0.85), ("Contraband Confidence", 0.90)), start=2):
-            row = ctk.CTkFrame(group, fg_color="transparent")
-            row.grid(row=offset, column=0, sticky="ew", padx=22, pady=(0, 18))
-            row.grid_columnconfigure(1, weight=1)
-            ctk.CTkLabel(row, text=label, font=("Segoe UI Semibold", 13), text_color=PALETTE["muted"], width=180, anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 10))
-            value_label = ctk.CTkLabel(row, text=f"{default:.2f}", font=("Segoe UI", 13), text_color=PALETTE["accent"], width=42, anchor="e")
-            value_label.grid(row=0, column=2, sticky="e")
-            self.slider_labels[label] = value_label
-            slider = ctk.CTkSlider(row, from_=0.0, to=1.0, number_of_steps=100, button_color=PALETTE["accent"], button_hover_color=PALETTE["accent_hover"], progress_color=PALETTE["accent"], command=lambda value, name=label: self._update_slider_value(name, value))
-            slider.set(default)
-            slider.grid(row=0, column=1, sticky="ew", padx=(0, 20))
-            self.admin_only_widgets.append(slider)
+        # Define configurations
+        self.PARAMS_CFG = {
+            "conf_thr": ("Pose Confidence", 0.05, 0.95, 90, "Minimum average MoveNet confidence required before a detected pose is considered valid for movement analysis.", False),
+            "active_thr": ("Fast Movement (px/sec)", 10.0, 500.0, 98, "Movement speed threshold used to classify activity as fast movement. Measured in pixels per second.", False),
+            "agg_thr": ("Aggressive Movement (px/sec)", 50.0, 1000.0, 95, "Movement speed threshold used to classify behavior as aggressive or potentially violent. Measured in pixels per second.", False),
+            "alert_frames": ("Alert Frame Count", 1, 15, 14, "Number of consecutive frames that must satisfy detection conditions before an alert is generated.", True),
+            "motion_threshold": ("Motion Threshold (pixels)", 500, 20000, 195, "Minimum amount of pixel change required before AI analysis is activated.", True),
+            "motion_ratio": ("Motion Ratio", 0.001, 0.050, 49, "Percentage of the image frame that must change before the AI engine wakes from motion-gating mode.", False),
+            "yolo_knife_conf": ("Knife Confidence", 0.05, 0.95, 90, "Minimum YOLOv8 confidence score required before a knife detection is accepted.", False),
+            "yolo_cell_conf": ("Cellphone Confidence", 0.05, 0.95, 90, "Minimum YOLOv8 confidence score required before a cellphone detection is accepted.", False),
+            "yolo_fallback_conf": ("Fallback Confidence", 0.05, 0.95, 90, "General confidence threshold used for detections that do not have a dedicated class-specific threshold.", False)
+        }
+
+        self.PRESETS = {
+            "high": {
+                "conf_thr": 0.25, "active_thr": 140.0, "agg_thr": 450.0, "alert_frames": 2, "motion_threshold": 4500, "motion_ratio": 0.009, "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50
+            },
+            "medium": {
+                "conf_thr": 0.22, "active_thr": 90.0, "agg_thr": 180.0, "alert_frames": 3, "motion_threshold": 5000, "motion_ratio": 0.010, "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50
+            },
+            "low": {
+                "conf_thr": 0.18, "active_thr": 250.0, "agg_thr": 700.0, "alert_frames": 5, "motion_threshold": 6000, "motion_ratio": 0.012, "yolo_knife_conf": 0.40, "yolo_cell_conf": 0.40, "yolo_fallback_conf": 0.60
+            }
+        }
+
+        # Dropdown for profile selection
+        profile_frame = ctk.CTkFrame(group, fg_color="transparent")
+        profile_frame.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
+        
+        ctk.CTkLabel(profile_frame, text="Active Detection Profile", font=("Segoe UI Semibold", 13), text_color=PALETTE["muted"]).pack(side="left", padx=(0, 10))
+        
+        self.profile_var = tk.StringVar(value="Medium")
+        self.profile_menu = ctk.CTkOptionMenu(
+            profile_frame,
+            variable=self.profile_var,
+            values=["High", "Medium", "Low", "Custom"],
+            width=140,
+            height=36,
+            corner_radius=8,
+            fg_color=PALETTE["accent"],
+            button_color=PALETTE["accent_hover"],
+            button_hover_color=PALETTE["accent_hover"],
+            dropdown_fg_color=PALETTE["panel_alt"],
+            dropdown_hover_color=PALETTE["card_soft"],
+            text_color=PALETTE["text"],
+            font=("Segoe UI Semibold", 12),
+            command=self._on_profile_change
+        )
+        self.profile_menu.pack(side="left")
+        self.admin_only_widgets.append(self.profile_menu)
+
+        grid_frame = ctk.CTkFrame(group, fg_color="transparent")
+        grid_frame.grid(row=3, column=0, sticky="ew", padx=22, pady=(0, 10))
+        grid_frame.grid_columnconfigure((0, 1), weight=1, uniform="tuning_cols")
+
+        behavior_card = ctk.CTkFrame(grid_frame, fg_color=PALETTE["card"], corner_radius=18, border_width=1, border_color=PALETTE["border"])
+        behavior_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=10)
+        behavior_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(behavior_card, text="Pose & Motion Gating", font=("Segoe UI Bold", 14), text_color=PALETTE["accent"]).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
+
+        yolo_card = ctk.CTkFrame(grid_frame, fg_color=PALETTE["card"], corner_radius=18, border_width=1, border_color=PALETTE["border"])
+        yolo_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=10)
+        yolo_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(yolo_card, text="YOLOv8 Contraband Detection", font=("Segoe UI Bold", 14), text_color=PALETTE["accent"]).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
+
+        self.sliders = {}
+        self.slider_val_labels = {}
+
+        behavior_keys = ["conf_thr", "active_thr", "agg_thr", "alert_frames", "motion_threshold", "motion_ratio"]
+        for idx, key in enumerate(behavior_keys, start=1):
+            self._create_slider_row(behavior_card, key, idx)
+
+        yolo_keys = ["yolo_knife_conf", "yolo_cell_conf", "yolo_fallback_conf"]
+        for idx, key in enumerate(yolo_keys, start=1):
+            self._create_slider_row(yolo_card, key, idx)
+
+        info_box = ctk.CTkFrame(yolo_card, fg_color=PALETTE["card_soft"], corner_radius=12)
+        info_box.grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 16))
+        info_text = ("Note: YOLOv8 model (best.pt) handles class 0 (knife) and class 1 (cellphone).\n"
+                     "Heavy inference is gated by motion detection to conserve power.")
+        ctk.CTkLabel(info_box, text=info_text, font=("Segoe UI", 11), text_color=PALETTE["muted"], justify="left", wraplength=320).pack(padx=12, pady=10)
+
+        db_settings = profile_store.get_ai_settings()
+        active_prof = db_settings.get("active_profile", "medium").title()
+        self.profile_var.set(active_prof)
+        custom_vals = db_settings.get("custom_settings", {})
+        profile_key = active_prof.lower()
+        current_vals = self.PRESETS[profile_key] if profile_key in self.PRESETS else custom_vals
+
+        for key in self.PARAMS_CFG:
+            val = current_vals.get(key, self.PARAMS_CFG[key][1])
+            self.sliders[key].set(val)
+            is_int = self.PARAMS_CFG[key][5]
+            if is_int: self.slider_val_labels[key].configure(text=f"{int(val)}")
+            else: self.slider_val_labels[key].configure(text=f"{val:.3f}" if key == "motion_ratio" else f"{val:.2f}")
+            if profile_key in self.PRESETS or not self.is_admin: self.sliders[key].configure(state="disabled")
 
         footer = ctk.CTkFrame(group, fg_color="transparent")
-        footer.grid(row=9, column=0, sticky="ew", padx=22, pady=(0, 22))
-        ctk.CTkLabel(footer, text="Threshold persistence is simulated in this build.", font=("Segoe UI", 12), text_color=PALETTE["subtle"], anchor="w").pack(side="left")
+        footer.grid(row=4, column=0, sticky="ew", padx=22, pady=(0, 22))
+        ctk.CTkLabel(footer, text="Settings are saved locally and applied to the AI engine on startup.", font=("Segoe UI", 12), text_color=PALETTE["subtle"], anchor="w").pack(side="left")
+        
         self.monitoring_save_button = ctk.CTkButton(footer, text="Save AI Preferences", font=("Segoe UI Semibold", 13), fg_color=PALETTE["success"], hover_color=PALETTE["success_hover"], text_color=PALETTE["page"], height=44, corner_radius=12, command=self.save_settings)
         self.monitoring_save_button.pack(side="right")
         self.admin_only_widgets.append(self.monitoring_save_button)
+
+        self.monitoring_reset_button = ctk.CTkButton(
+            footer, text="Reset Custom to Medium", font=("Segoe UI Semibold", 13),
+            fg_color=PALETTE["card_soft"], hover_color=PALETTE["panel_alt"],
+            text_color=PALETTE["text"], height=44, corner_radius=12,
+            border_width=1, border_color=PALETTE["border"],
+            command=self.reset_custom_to_medium
+        )
+        self.monitoring_reset_button.pack(side="right", padx=(0, 12))
+        self.admin_only_widgets.append(self.monitoring_reset_button)
+
+    def _create_slider_row(self, parent_card, key, row_idx):
+        label_text, val_min, val_max, steps, tooltip_text, is_int = self.PARAMS_CFG[key]
+        row_frame = ctk.CTkFrame(parent_card, fg_color="transparent")
+        row_frame.grid(row=row_idx, column=0, sticky="ew", padx=16, pady=(0, 14))
+        row_frame.grid_columnconfigure(1, weight=1)
+        lbl_container = ctk.CTkFrame(row_frame, fg_color="transparent")
+        lbl_container.grid(row=0, column=0, sticky="w", columnspan=3, pady=(0, 4))
+        ctk.CTkLabel(lbl_container, text=label_text, font=("Segoe UI Semibold", 12), text_color=PALETTE["text"]).pack(side="left")
+        help_btn = ctk.CTkLabel(lbl_container, text=" (?)", font=("Segoe UI", 11, "bold"), text_color=PALETTE["subtle"], cursor="question_arrow")
+        help_btn.pack(side="left", padx=(4, 0))
+        CTkTooltip(help_btn, tooltip_text)
+        val_lbl = ctk.CTkLabel(row_frame, text="0.00", font=("Segoe UI Semibold", 12), text_color=PALETTE["accent"], width=50, anchor="e")
+        val_lbl.grid(row=1, column=2, sticky="e")
+        self.slider_val_labels[key] = val_lbl
+        slider = ctk.CTkSlider(row_frame, from_=val_min, to=val_max, number_of_steps=steps, button_color=PALETTE["accent"], button_hover_color=PALETTE["accent_hover"], progress_color=PALETTE["accent"], command=lambda val, k=key: self._on_slider_move(k, val))
+        slider.grid(row=1, column=1, sticky="ew", padx=(0, 10))
+        self.sliders[key] = slider
+        self.admin_only_widgets.append(slider)
+
+    def _on_slider_move(self, key, val):
+        is_int = self.PARAMS_CFG[key][5]
+        formatted_val = f"{int(val)}" if is_int else (f"{val:.3f}" if key == "motion_ratio" else f"{val:.2f}")
+        self.slider_val_labels[key].configure(text=formatted_val)
+        if self.profile_var.get() != "Custom": self.profile_var.set("Custom")
+
+    def _on_profile_change(self, selected_profile):
+        selected_profile = selected_profile.lower()
+        if selected_profile in self.PRESETS:
+            preset_vals = self.PRESETS[selected_profile]
+            for key, val in preset_vals.items():
+                self.sliders[key].set(val)
+                is_int = self.PARAMS_CFG[key][5]
+                formatted_val = f"{int(val)}" if is_int else (f"{val:.3f}" if key == "motion_ratio" else f"{val:.2f}")
+                self.slider_val_labels[key].configure(text=formatted_val)
+                self.sliders[key].configure(state="disabled")
+        else:
+            for key in self.PARAMS_CFG:
+                if self.is_admin: self.sliders[key].configure(state="normal")
+
+    def reset_custom_to_medium(self):
+        if not self.is_admin:
+            return
+            
+        self.profile_var.set("Custom")
+        self._on_profile_change("Custom")
+        
+        medium_preset = self.PRESETS["medium"]
+        for key, val in medium_preset.items():
+            self.sliders[key].set(val)
+            is_int = self.PARAMS_CFG[key][5]
+            if is_int:
+                self.slider_val_labels[key].configure(text=f"{int(val)}")
+            else:
+                self.slider_val_labels[key].configure(text=f"{val:.3f}" if key == "motion_ratio" else f"{val:.2f}")
+                
+        messagebox.showinfo("Monitoring Preferences", "Custom settings reset to Medium preset baseline. Click Save to persist.")
 
     def _configure_tree_style(self):
         style = ttk.Style()
@@ -633,5 +866,31 @@ class SettingsScreen(ctk.CTkFrame):
         messagebox.showinfo("Test Connection", f"Connection test for Camera {camera_index} is not wired yet in this build.")
 
     def save_settings(self):
-        self.monitoring_state_var.set("Demo Only")
-        messagebox.showinfo("Monitoring Preferences", "Camera and AI tuning persistence is not wired yet in this build. Branding and account management are now functional.")
+        if not self.is_admin:
+            return
+            
+        profile = self.profile_var.get().lower()
+        custom_vals = {}
+        for key in self.PARAMS_CFG:
+            val = self.sliders[key].get()
+            if self.PARAMS_CFG[key][5]: # is_int
+                val = int(val)
+            custom_vals[key] = val
+            
+        try:
+            profile_store.save_ai_settings(profile, custom_vals, actor_username=self.current_user.get("username") if self.current_user else "system")
+            
+            # Live-apply to running engine
+            try:
+                from monitor_app import camera_view
+                engine = camera_view._pose_engine
+                if engine:
+                    engine._set_logic_sensitivity(profile, custom_vals)
+                    print(f"Applied AI settings live to running engine: profile={profile}")
+            except Exception as e:
+                print(f"Failed to live-apply AI settings: {e}")
+
+            self.monitoring_state_var.set("Saved")
+            messagebox.showinfo("Monitoring Preferences", "AI thresholds and detection profile saved and applied live.")
+        except Exception as exc:
+            messagebox.showerror("Database Error", f"Failed to save settings: {exc}")

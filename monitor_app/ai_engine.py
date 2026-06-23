@@ -9,7 +9,7 @@ from PIL import Image
 
 
 # ==========================================
-# 🛡️ CAPSTONE DEFENSE DEBUGGER
+# CAPSTONE DEFENSE DEBUGGER
 # ==========================================
 class CapstoneDebug:
     """Provides clear reasoning logs for engine decisions."""
@@ -19,11 +19,11 @@ class CapstoneDebug:
     def log(camera_id, message):
         if CapstoneDebug.ENABLED:
             timestamp = datetime.now().strftime("%H:%M:%S")
-            print(f"[{timestamp}] [Monitor-{camera_id}] 🧠 AI Thinking: {message}")
+            print(f"[{timestamp}] [Monitor-{camera_id}] AI Thinking: {message}")
 
 
 # ==========================================
-# 🚀 AI AVAILABILITY CHECK
+# AI AVAILABILITY CHECK
 # ==========================================
 TF_AVAILABLE = False
 HUB_AVAILABLE = False
@@ -54,7 +54,7 @@ except Exception:
 
 
 # ==========================================
-# 📊 BASIC MOTION ENGINE (Fallback)
+# BASIC MOTION ENGINE (Fallback)
 # ==========================================
 class BasicMotionEngine:
     """Fallback when no AI models are loaded."""
@@ -89,7 +89,7 @@ class BasicMotionEngine:
 
 
 # ==========================================
-# 🚔 MOTION-OPTIMIZED AI ENGINE (Primary)
+# MOTION-OPTIMIZED AI ENGINE (Primary)
 # ==========================================
 class MotionOptimizedEngine:
     """
@@ -98,7 +98,7 @@ class MotionOptimizedEngine:
     Optimization: Only runs heavy AI when Stage 1 Motion is detected.
     """
 
-    def __init__(self, debug=False, sensitivity="medium", enable_yolo=True, **kwargs):
+    def __init__(self, debug=False, sensitivity="medium", enable_yolo=True, custom_values=None, **kwargs):
         print("--- CAPSTONE AI ENGINE INITIALIZING ---")
         self.debug = debug
         self.enable_yolo = enable_yolo and YOLO_AVAILABLE
@@ -122,7 +122,8 @@ class MotionOptimizedEngine:
         self.trackers = {}
         self.last_run = {}  # For throttling
 
-        self._set_logic_sensitivity(sensitivity)
+        custom_vals = kwargs.get("custom_values")
+        self._set_logic_sensitivity(sensitivity, custom_vals)
         self._setup_hardware()
         self._load_models()
 
@@ -130,7 +131,7 @@ class MotionOptimizedEngine:
         self.EDGES = [(0, 1), (0, 2), (1, 3), (2, 4), (0, 5), (0, 6), (5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11),
                       (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
 
-    def _set_logic_sensitivity(self, level):
+    def _set_logic_sensitivity(self, level, custom_values=None):
         if level == "high":
             self.CONF_THR = 0.25
             self.AGG_THR = 450.0  # pixels/sec
@@ -138,13 +139,45 @@ class MotionOptimizedEngine:
             self.ALERT_FRAMES = 2
             self.motion_threshold = 4500
             self.motion_ratio = 0.009
-        else:
+            self.yolo_knife_conf = 0.30
+            self.yolo_cell_conf = 0.30
+            self.yolo_fallback_conf = 0.50
+        elif level == "low":
+            self.CONF_THR = 0.18
+            self.AGG_THR = 700.0
+            self.ACTIVE_THR = 250.0
+            self.ALERT_FRAMES = 5
+            self.motion_threshold = 6000
+            self.motion_ratio = 0.012
+            self.yolo_knife_conf = 0.40
+            self.yolo_cell_conf = 0.40
+            self.yolo_fallback_conf = 0.60
+        elif level == "custom" and custom_values:
+            self.CONF_THR = float(custom_values.get("conf_thr", 0.22))
+            self.AGG_THR = float(custom_values.get("agg_thr", 180.0))
+            self.ACTIVE_THR = float(custom_values.get("active_thr", 90.0))
+            self.ALERT_FRAMES = int(custom_values.get("alert_frames", 3))
+            self.motion_threshold = int(custom_values.get("motion_threshold", 5000))
+            self.motion_ratio = float(custom_values.get("motion_ratio", 0.010))
+            self.yolo_knife_conf = float(custom_values.get("yolo_knife_conf", 0.30))
+            self.yolo_cell_conf = float(custom_values.get("yolo_cell_conf", 0.30))
+            self.yolo_fallback_conf = float(custom_values.get("yolo_fallback_conf", 0.50))
+        else:  # medium (default)
             self.CONF_THR = 0.22
             self.AGG_THR = 180.0
             self.ACTIVE_THR = 90.0
             self.ALERT_FRAMES = 3
             self.motion_threshold = 5000
             self.motion_ratio = 0.010
+            self.yolo_knife_conf = 0.30
+            self.yolo_cell_conf = 0.30
+            self.yolo_fallback_conf = 0.50
+
+    def apply_profile(self, level, custom_values=None):
+        """Hot-reload thresholds on a running engine without reinit."""
+        with self.lock:
+            self._set_logic_sensitivity(level, custom_values)
+            print(f"--- AI ENGINE: Profile switched to '{level}' ---")
 
     def _setup_hardware(self):
         """Enable GPU for both TF (MoveNet) and Torch (YOLOv8)."""
@@ -156,27 +189,27 @@ class MotionOptimizedEngine:
                     for gpu in gpus:
                         tf.config.experimental.set_memory_growth(gpu, True)
                     self.gpu_enabled = True
-                    print(f"✅ MoveNet: GPU Accelerated — {gpus[0].name}")
+                    print(f"MoveNet: GPU Accelerated — {gpus[0].name}")
                     CapstoneDebug.log("All", f"MoveNet running on GPU: {gpus[0].name}")
                 else:
-                    print("⚠️  MoveNet: No GPU detected by TensorFlow — running on CPU")
+                    print("MoveNet: No GPU detected by TensorFlow — running on CPU")
                     CapstoneDebug.log("All", "MoveNet fallback: CPU (no TF-visible GPU)")
             except Exception as e:
-                print(f"⚠️  MoveNet GPU setup error: {e} — falling back to CPU")
+                print(f"MoveNet GPU setup error: {e} — falling back to CPU")
         else:
-            print("⚠️  MoveNet: TensorFlow unavailable — skipped")
+            print("MoveNet: TensorFlow unavailable — skipped")
 
         # --- YOLOv8 / PyTorch ---
         if YOLO_AVAILABLE:
             if torch.cuda.is_available():
                 self.yolo_device = 0  # GPU index
-                print(f"✅ YOLOv8: GPU Accelerated — {torch.cuda.get_device_name(0)}")
+                print(f" YOLOv8: GPU Accelerated — {torch.cuda.get_device_name(0)}")
             else:
                 self.yolo_device = 'cpu'
-                print("⚠️  YOLOv8: No CUDA GPU detected — running on CPU")
+                print("YOLOv8: No CUDA GPU detected — running on CPU")
         else:
             self.yolo_device = 'cpu'
-            print("⚠️  YOLOv8: Ultralytics/PyTorch unavailable — skipped")
+            print("YOLOv8: Ultralytics/PyTorch unavailable — skipped")
 
     def _load_models(self):
         """Clean modular loading for explanation."""
@@ -276,7 +309,7 @@ class MotionOptimizedEngine:
 
         # --- FULL AI MODE ---
         res["frame"] = frame.copy()
-        res["processing_mode"] = "🔥 AI ACTIVE (RTX GPU Enabled)"
+        res["processing_mode"] = "AI ACTIVE (RTX GPU Enabled)"
         with self.lock:
             self.stats["ai_runs"] += 1
         CapstoneDebug.log(camera_id, f"Significant motion detected ({score} px). Running AI engines...")
@@ -316,13 +349,13 @@ class MotionOptimizedEngine:
                     if label in ("Aggressive / Fighting", "Fast Movement"):
                         res["alert_triggered"] = True
                         res["alerts"].append(f"Person {i + 1}: {label.upper()}")
-                        CapstoneDebug.log(cam_id, f"⚠️ ALERT: Fast/Aggressive motion detected for Person {i + 1}")
+                        CapstoneDebug.log(cam_id, f"ALERT: Fast/Aggressive motion detected for Person {i + 1}")
         except Exception as e:
             CapstoneDebug.log(cam_id, f"MoveNet inference error: {e}")
 
     def _run_yolo_logic(self, res, cam_id):
         """
-        🚀 REFACTORED YOLO LOGIC
+        REFACTORED YOLO LOGIC
         - Uses torch.cuda.is_available() for device check.
         - Filters cellphone by COCO class ID 67.
         - Forced label 'knife' for custom model.
@@ -336,12 +369,16 @@ class MotionOptimizedEngine:
             try:
                 results = self.yolo_custom(res["frame"], verbose=False, imgsz=640, device=device)
                 CLASS_NAMES = {0: "knife", 1: "cellphone"}
-                CONF_THRESHOLDS = {0: 0.30, 1: 0.30}
+                CONF_THRESHOLDS = {
+                    0: getattr(self, "yolo_knife_conf", 0.30),
+                    1: getattr(self, "yolo_cell_conf", 0.30)
+                }
+                fallback_thr = getattr(self, "yolo_fallback_conf", 0.50)
                 for r in results:
                     for box in r.boxes:
                         cls_id = int(box.cls)
                         conf = float(box.conf)
-                        if cls_id in CLASS_NAMES and conf > CONF_THRESHOLDS.get(cls_id, 0.50):
+                        if cls_id in CLASS_NAMES and conf > CONF_THRESHOLDS.get(cls_id, fallback_thr):
                             detections_found.append({
                                 "name": CLASS_NAMES[cls_id],
                                 "conf": conf,
@@ -365,7 +402,7 @@ class MotionOptimizedEngine:
 
             res["alert_triggered"] = True
             res["alerts"].append(f"CONTRABAND: {name}")
-            CapstoneDebug.log(cam_id, f"🚫 CONTRABAND FOUND: {name} ({conf:.2f}) [Source: {det['source']}]")
+            CapstoneDebug.log(cam_id, f"CONTRABAND FOUND: {name} ({conf:.2f}) [Source: {det['source']}]")
 
     def classify_behavior(self, kps, p_id, cam_id, frame_shape):
         frame_h, frame_w = frame_shape[:2]

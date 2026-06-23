@@ -51,7 +51,7 @@ The project is divided into 6 decoupled workflows. Ensure any modifications resp
 
 ### 1. Dual Databases
 There is a strict separation between configuration and event data.
-*   **`app_state.db`**: Stores system settings, user credentials, and branding. Managed by `profile_store.py`.
+*   **`app_state.db`**: Stores system settings, user credentials, and branding. Managed by `profile_store.py`. Now also includes the `ai_settings` table for persisting the AI Detection Profile (High, Medium, Low, Custom) and custom threshold values.
 *   **`incidents.db`**: Stores AI event logs and metadata. Managed by `incidents.py`.
 *   *Constraint*: Agents working on user/system state MUST NOT touch the incident database, and vice-versa.
 
@@ -67,6 +67,37 @@ There is a strict separation between configuration and event data.
 *   **Rule**: Adhere to the "Institutional Dark" aesthetic.
 *   **Implementation**: Always use `self.NAV_PALETTE` in `main.py` for navigation elements and the `PALETTE` in `dashboard.py`/`settings.py` for screen-specific widgets.
 *   **Restriction**: Do NOT use `letter_spacing` in CustomTkinter widgets as it is unsupported in this environment and will cause errors.
+
+## AI Threshold Reference
+
+### MoveNet Behavior Thresholds (`ai_engine.py` → `_set_logic_sensitivity()`)
+
+| Threshold | `high` | `medium` (default) | `low` (initial theoretical) | Purpose |
+|---|---|---|---|---|
+| `CONF_THR` | 0.25 | 0.22 | 0.18 | Keypoint confidence cutoff |
+| `AGG_THR` | 450.0 px/sec | 180.0 px/sec | 700.0 px/sec | Aggressive / Fighting trigger |
+| `ACTIVE_THR` | 140.0 px/sec | 90.0 px/sec | 250.0 px/sec | Fast Movement trigger |
+| `ALERT_FRAMES` | 2 | 3 | 5 | Consecutive frames before alert |
+| `motion_threshold` | 4500 | 5000 | 6000 | Min non-zero pixels to gate AI |
+| `motion_ratio` | 0.009 | 0.010 | 0.012 | Adaptive gate (frame_w × frame_h × ratio) |
+
+**Hardcoded values in `ai_engine.py`:**
+- Person detection confidence: `> 0.2` (mean keypoint conf, L310)
+- Skeleton draw / edge confidence: `> 0.3` (L398–400)
+
+### YOLOv8 Contraband Thresholds (`ai_engine.py` → `_run_yolo_logic()`)
+
+| Class ID | Label | Confidence Threshold |
+|---|---|---|
+| 0 | knife | 0.30 |
+| 1 | cellphone | 0.30 |
+
+- Fallback threshold for unlisted classes: `0.50`
+- Inference image size: `640`
+
+### Tuner Thresholds (`movenet_tuner.py`, module-level constants)
+
+Mirrors `high` sensitivity: `CONF_THR=0.25`, `AGG_THR=450.0`, `ACTIVE_THR=140.0`, `MOTION_THRESHOLD=4500`, `MOTION_RATIO=0.009`.
 
 ## Development Commands
 *   **Run Application**: `powershell.exe -ExecutionPolicy Bypass -File .\run_app.ps1`
