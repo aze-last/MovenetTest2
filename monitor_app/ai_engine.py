@@ -120,6 +120,7 @@ class MotionOptimizedEngine:
         self.yolo_inference_lock = threading.Lock()
         self.stats = {"total": 0, "ai_runs": 0, "skipped": 0}
         self.trackers = {}
+        self.yolo_trackers = {}
         
         # Concealment feature - separate stable-ID tracking layer (hip-centroid matching)
         # Does NOT touch self.trackers (used by classify_behavior)
@@ -405,16 +406,19 @@ class MotionOptimizedEngine:
                 if conf > 0.2:
                     hip_l, hip_r = person[11], person[12]
                     hip_centroid = ((hip_l[1] + hip_r[1]) / 2, (hip_l[0] + hip_r[0]) / 2)
-                    detected_people.append({
-                        "p_id": i,
-                        "hip_centroid": hip_centroid,
-                        "kps": person,
-                    })
-
+                    
                     res["num_people"] += 1
                     self.draw_skeleton(res["frame"], person, i)
                     label, score = self.classify_behavior(person, i, cam_id, res["frame"].shape)
                     self.label_person(res["frame"], person, i, label, score)
+
+                    detected_people.append({
+                        "p_id": i,
+                        "hip_centroid": hip_centroid,
+                        "kps": person,
+                        "label": label,
+                        "score": score
+                    })
 
                     if label in ("Aggressive / Fighting", "Fast Movement"):
                         res["alert_triggered"] = True
@@ -422,7 +426,14 @@ class MotionOptimizedEngine:
                         CapstoneDebug.log(cam_id, f"ALERT: Fast/Aggressive motion detected for Person {i + 1}")
                         
             detected_people = self._match_concealment_ids(cam_id, detected_people)
+            res.setdefault("detections", {"behavior": [], "contraband": []})
             for dp in detected_people:
+                res["detections"]["behavior"].append({
+                    "person_index": dp["p_id"],
+                    "stable_id": dp["stable_id"],
+                    "label": dp["label"],
+                    "score": dp["score"]
+                })
                 CapstoneDebug.log(cam_id, f"Stable ID Test -> p_id: {dp['p_id']} mapped to stable_id: {dp['stable_id']}")
                 
         except Exception as e:
@@ -430,18 +441,32 @@ class MotionOptimizedEngine:
 
     def _run_yolo_logic(self, res, cam_id):
         """
-        REFACTORED YOLO LOGIC
-        - Uses torch.cuda.is_available() for device check.
-        - Filters cellphone by COCO class ID 67.
-        - Forced label 'knife' for custom model.
-        - Merged dual-detection pipeline.
+        REFACTORED YOLO LOGIC with Official ByteTrack integration.
+        - Run custom YOLO model.
+        - Feed detections into camera-specific BYTETracker.
+        - Draw bounding boxes with stable Track IDs.
         """
         device = self.yolo_device  # Cached at __init__ via _setup_hardware()
         detections_found = []
 
-        # Combined Model -> KNIFE (class 0) + CELLPHONE (class 1)
         if self.yolo_custom:
             try:
+                # Initialize tracker for camera if not present
+                if cam_id not in self.yolo_trackers:
+                    from ultralytics.utils import IterableSimpleNamespace
+                    from ultralytics.trackers.byte_tracker import BYTETracker
+                    args = IterableSimpleNamespace(
+                        track_thresh=0.25,
+                        track_buffer=30,
+                        match_thresh=0.8,
+                        frame_rate=30,
+                        track_high_thresh=0.5,
+                        track_low_thresh=0.1,
+                        new_track_thresh=0.6,
+                        fuse_score=False
+                    )
+                    self.yolo_trackers[cam_id] = BYTETracker(args)
+
                 results = self.yolo_custom(res["frame"], verbose=False, imgsz=640, device=device)
                 CLASS_NAMES = {0: "knife", 1: "cellphone"}
                 CONF_THRESHOLDS = {
@@ -449,35 +474,56 @@ class MotionOptimizedEngine:
                     1: getattr(self, "yolo_cell_conf", 0.30)
                 }
                 fallback_thr = getattr(self, "yolo_fallback_conf", 0.50)
+
                 for r in results:
-                    for box in r.boxes:
-                        cls_id = int(box.cls)
-                        conf = float(box.conf)
+                    # Update ByteTrack with YOLO Boxes
+                    tracks = self.yolo_trackers[cam_id].update(r.boxes, res["frame"])
+                    
+                    # Update active track time in central inference manager for hysteresis gating
+                    if len(tracks) > 0:
+                        from monitor_app.central_inference import get_inference_manager
+                        get_inference_manager().update_active_track_time(cam_id)
+
+                    for track in tracks:
+                        x1, y1, x2, y2, track_id, conf, cls_id, idx = track
+                        cls_id = int(cls_id)
+                        conf = float(conf)
+                        track_id = int(track_id)
+
                         if cls_id in CLASS_NAMES and conf > CONF_THRESHOLDS.get(cls_id, fallback_thr):
                             detections_found.append({
                                 "name": CLASS_NAMES[cls_id],
                                 "conf": conf,
-                                "box": box.xyxy[0],
+                                "box": [x1, y1, x2, y2],
+                                "track_id": track_id,
                                 "source": "combined"
                             })
             except Exception as e:
-                CapstoneDebug.log(cam_id, f"Combined YOLO Error: {e}")
+                CapstoneDebug.log(cam_id, f"Combined YOLO Tracker Error: {e}")
 
         # 3. Consolidate and Render
+        res.setdefault("detections", {"behavior": [], "contraband": []})
         for det in detections_found:
             x1, y1, x2, y2 = map(int, det["box"])
             name = det["name"]
             conf = det["conf"]
+            track_id = det["track_id"]
 
-            # Label everything as ALERT for high urgency
-            label_text = f"ALERT: {name.upper()}"
+            # Label everything as ALERT with track ID for high urgency
+            label_text = f"ALERT: {name.upper()} (ID: {track_id})"
             cv2.rectangle(res["frame"], (x1, y1), (x2, y2), (0, 0, 255), 3)
             cv2.putText(res["frame"], label_text, (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
             res["alert_triggered"] = True
-            res["alerts"].append(f"CONTRABAND: {name}")
-            CapstoneDebug.log(cam_id, f"CONTRABAND FOUND: {name} ({conf:.2f}) [Source: {det['source']}]")
+            res["alerts"].append(f"CONTRABAND: {name} (ID: {track_id})")
+            res["detections"]["contraband"].append({
+                "name": name,
+                "confidence": conf,
+                "box": [x1, y1, x2, y2],
+                "track_id": track_id
+            })
+            CapstoneDebug.log(cam_id, f"CONTRABAND FOUND: {name} ({conf:.2f}) [ID: {track_id}]")
 
     def classify_behavior(self, kps, p_id, cam_id, frame_shape):
         frame_h, frame_w = frame_shape[:2]
@@ -524,4 +570,9 @@ class MotionOptimizedEngine:
 
     def reset_tracker(self, cam_id=None):
         self.trackers = {}
+        if cam_id is not None:
+            if cam_id in self.yolo_trackers:
+                del self.yolo_trackers[cam_id]
+        else:
+            self.yolo_trackers = {}
         CapstoneDebug.log(cam_id or "All", "Trackers reset to baseline.")

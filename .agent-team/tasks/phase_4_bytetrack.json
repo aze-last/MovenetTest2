@@ -1,0 +1,9 @@
+{
+  "id": "phase_4_bytetrack",
+  "title": "Phase 4: Official ByteTrack Integration",
+  "status": "COMPLETED",
+  "assigned_to": "coordinator@cellwatch-ai",
+  "description": "Import and configure ultralytics.trackers.byte_tracker.BYTETracker per camera channel inside MotionOptimizedEngine. Implement tracking hysteresis logic to keep running inference for 3.0s after tracks are lost.",
+  "created_at": "2026-06-26T15:49:17Z",
+  "updated_at": "2026-06-26T15:49:17Z"
+}

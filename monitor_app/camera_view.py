@@ -492,9 +492,14 @@ class CameraFeedWidget(ttk.Frame):
             packet = None
             try:
                 is_moving, score = self.gater.detect_motion(raw_frame)
-                if is_moving:
+                
+                # Check tracking hysteresis: if we have active tracks, continue submitting to GPU
+                from monitor_app.central_inference import get_inference_manager
+                manager = get_inference_manager()
+                has_active = manager.has_active_tracks(str(self.camera_id))
+                
+                if is_moving or has_active:
                     # Initialize initial packet and submit to centralized GPU queue
-                    from monitor_app.central_inference import get_inference_manager
                     packet = EvidencePacket(
                         camera_id=str(self.camera_id),
                         timestamp=time.time(),
@@ -502,7 +507,7 @@ class CameraFeedWidget(ttk.Frame):
                         motion_detected=True,
                         motion_score=score
                     )
-                    packet = get_inference_manager().submit_task(packet)
+                    packet = manager.submit_task(packet)
                 else:
                     # Skip full AI, gate locally on CPU (Power Saving)
                     annotated_frame = raw_frame.copy()

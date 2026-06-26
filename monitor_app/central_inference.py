@@ -23,6 +23,17 @@ class CentralInferenceManager:
         self.worker_thread: Optional[threading.Thread] = None
         self.engine = None
         self.lock = threading.Lock()
+        self.last_active_track_times = {}
+        self.hysteresis_timeout = 3.0  # seconds
+
+    def has_active_tracks(self, camera_id: str) -> bool:
+        with self.lock:
+            last_time = self.last_active_track_times.get(str(camera_id), 0.0)
+            return (time.time() - last_time) < self.hysteresis_timeout
+
+    def update_active_track_time(self, camera_id: str):
+        with self.lock:
+            self.last_active_track_times[str(camera_id)] = time.time()
 
     def start(self):
         with self.lock:
