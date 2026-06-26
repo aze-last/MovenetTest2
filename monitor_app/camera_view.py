@@ -9,6 +9,9 @@ import queue
 import time
 from monitor_app.incident_record import IncidentRecorder
 from monitor_app.evidence import EvidencePacket
+from monitor_app.logger import get_module_logger
+
+logger = get_module_logger("Camera Feed")
 
 # OpenCV
 try:
@@ -426,9 +429,12 @@ class CameraFeedWidget(ttk.Frame):
         self.running = True
         self._consecutive_failures = 0
 
-        # Register with AlertManager
-        from monitor_app.alert_manager import get_alert_manager
-        get_alert_manager().register_recorder(self.camera_id, self.recorder)
+        # AlertManager and IncidentRecorder are now loosely coupled via EventBus
+        from monitor_app.health import get_health_monitor, ComponentState
+        get_health_monitor().register_component(
+            f"Camera_{self.camera_id}", 
+            lambda: ComponentState.RUNNING if (self.cap and self.cap.isOpened() and self.running) else (ComponentState.IDLE if not self.running else ComponentState.FAILED)
+        )
 
         if CV2_AVAILABLE and self.source is not None:
             self._open_capture()
@@ -471,22 +477,41 @@ class CameraFeedWidget(ttk.Frame):
 
     def _worker_loop(self):
         """Background thread for capturing and processing frames."""
+        from monitor_app.config import get_config
+        initial_backoff = get_config("camera_reconnect", "initial_backoff", 1.0)
+        max_backoff = get_config("camera_reconnect", "max_backoff", 60.0)
+        factor = get_config("camera_reconnect", "factor", 2.0)
+        
+        reconnect_delay = initial_backoff
         MAX_CONSECUTIVE_FAILURES = 60  # ~2 seconds of failures before reconnect
+        
         while self.running:
             if not self.cap or not self.cap.isOpened():
-                # Try to reconnect every 3 seconds
-                time.sleep(3.0)
-                if self.running:
-                    print(f"Camera {self.camera_id}: attempting reconnect...")
-                    self._open_capture()
+                logger.info(f"Attempting reconnect in {reconnect_delay:.1f}s...", camera_id=self.camera_id)
+                # Sleep in small steps to respond quickly to self.running = False
+                sleep_start = time.time()
+                while self.running and (time.time() - sleep_start < reconnect_delay):
+                    time.sleep(0.1)
+                
+                if not self.running:
+                    break
+                
+                self._open_capture()
+                if self.cap and self.cap.isOpened():
+                    logger.info("Reconnect successful!", camera_id=self.camera_id)
+                    reconnect_delay = initial_backoff
+                else:
+                    reconnect_delay = min(reconnect_delay * factor, max_backoff)
                 continue
 
             ret, raw_frame = self.cap.read()
             if not ret:
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"Camera {self.camera_id}: {self._consecutive_failures} consecutive read failures, reconnecting...")
-                    self._open_capture()
+                    logger.warning(f"{self._consecutive_failures} consecutive read failures, closing connection.", camera_id=self.camera_id)
+                    if self.cap:
+                        self.cap.release()
+                        self.cap = None
                 time.sleep(0.03)
                 continue
 
@@ -497,12 +522,40 @@ class CameraFeedWidget(ttk.Frame):
             try:
                 is_moving, score = self.gater.detect_motion(raw_frame)
                 
+                now = time.time()
+                from monitor_app.config import get_config
+                enable_delay = get_config("motion_gate", "enable_delay", 0.5)
+                disable_delay = get_config("motion_gate", "disable_delay", 3.0)
+                min_duration = get_config("motion_gate", "minimum_active_duration", 1.0)
+                
+                if is_moving:
+                    if not hasattr(self, "_motion_first_seen") or self._motion_first_seen == 0.0:
+                        self._motion_first_seen = now
+                    self._last_motion_seen = now
+                    
+                    duration = now - self._motion_first_seen
+                    required_duration = max(enable_delay, min_duration)
+                    
+                    if duration >= required_duration:
+                        if not getattr(self, "_motion_gate_enabled", False):
+                            self._motion_gate_enabled = True
+                            logger.info("Motion Gate ENABLED", camera_id=self.camera_id)
+                else:
+                    self._motion_first_seen = 0.0
+                    if getattr(self, "_motion_gate_enabled", False):
+                        last_seen = getattr(self, "_last_motion_seen", 0.0)
+                        if now - last_seen >= disable_delay:
+                            self._motion_gate_enabled = False
+                            logger.info("Motion Gate DISABLED", camera_id=self.camera_id)
+
                 # Check tracking hysteresis: if we have active tracks, continue submitting to GPU
                 from monitor_app.central_inference import get_inference_manager
                 manager = get_inference_manager()
                 has_active = manager.has_active_tracks(str(self.camera_id))
                 
-                if is_moving or has_active:
+                gate_active = getattr(self, "_motion_gate_enabled", False) or has_active
+                
+                if gate_active:
                     # Initialize initial packet and submit to centralized GPU queue
                     packet = EvidencePacket(
                         camera_id=str(self.camera_id),
@@ -562,9 +615,7 @@ class CameraFeedWidget(ttk.Frame):
         if self.cap:
             self.cap.release()
             self.cap = None
-        # Unregister camera
-        from monitor_app.alert_manager import get_alert_manager
-        get_alert_manager().unregister_recorder(self.camera_id)
+        # AlertManager and IncidentRecorder are loosely coupled via EventBus
         utils.GlobalState.unregister_camera(self.camera_id)
 
     def update_loop(self):

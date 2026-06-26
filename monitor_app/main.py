@@ -70,6 +70,10 @@ class CellWatchApp(ctk.CTk):
         super().__init__()
         profile_store.ensure_app_state()
         self.app_profile = profile_store.get_app_profile()
+        
+        # Start Health Monitor watchdog
+        from monitor_app.health import get_health_monitor
+        get_health_monitor().start()
 
         self.title(self.app_profile["system_name"])
         self.geometry(utils.WINDOW_SIZE)
@@ -294,6 +298,14 @@ class CellWatchApp(ctk.CTk):
     def logout(self):
         self.current_user = None
         self.show_login()
+
+    def destroy(self):
+        try:
+            from monitor_app.health import get_health_monitor
+            get_health_monitor().stop()
+        except:
+            pass
+        super().destroy()
 
 if __name__ == "__main__":
     app = CellWatchApp()

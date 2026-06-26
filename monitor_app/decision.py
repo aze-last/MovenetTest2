@@ -1,6 +1,9 @@
 import threading
 from typing import Tuple, List
 from monitor_app.evidence import EvidencePacket
+from monitor_app.logger import get_module_logger
+
+logger = get_module_logger("Decision Engine")
 
 class DecisionEngine:
     """
@@ -9,14 +12,22 @@ class DecisionEngine:
     """
     def __init__(self):
         self.lock = threading.Lock()
+        
+        # Register with Health Monitor
+        from monitor_app.health import get_health_monitor
+        get_health_monitor().register_component("Decision Engine", self.get_state)
+
+    def get_state(self):
+        from monitor_app.health import ComponentState
+        return ComponentState.RUNNING
 
     def evaluate_trigger(self, packet: EvidencePacket) -> bool:
         """
         Evaluate if a new incident recording should be triggered.
         """
-        triggered = packet.alert_triggered
+        triggered = bool(packet.alert_triggered or packet.behavior_evidence)
         if triggered:
-            print(f"[Decision Engine] Trigger condition met for Cam {packet.camera_id}! Alerts: {packet.alerts}")
+            logger.info(f"Trigger condition met! Alerts: {packet.alerts}", camera_id=packet.camera_id)
         return triggered
 
     def get_event_details(self, packet: EvidencePacket) -> Tuple[str, List[float]]:
@@ -24,12 +35,17 @@ class DecisionEngine:
         Extract standardized event type labels and confidence scores.
         """
         detections = packet.detections
-        
+
         # Parse behaviors (aggressive, suspicious, fast)
         behaviors = [
-            d.get('label', 'Unknown') for d in detections.get('behavior', []) 
+            d.get('label', 'Unknown') for d in detections.get('behavior', [])
             if any(x in d.get('label', '') for x in ["Aggressive", "Suspicious", "Fast"])
         ]
+
+        behavior_evidence_labels = [
+            evidence.behavior_type.capitalize() for evidence in packet.behavior_evidence
+        ]
+        behaviors.extend(behavior_evidence_labels)
         
         # Parse contraband items
         items = [d.get('name', 'Item') for d in detections.get('contraband', [])]
@@ -41,7 +57,8 @@ class DecisionEngine:
         # Compile confidence scores
         scores_b = [d.get('score', 0.0) for d in detections.get('behavior', [])]
         scores_c = [d.get('confidence', 0.0) for d in detections.get('contraband', [])]
-        confidence_scores = scores_b + scores_c
+        scores_e = [evidence.confidence for evidence in packet.behavior_evidence]
+        confidence_scores = scores_b + scores_c + scores_e
         
         return event_type, confidence_scores
 

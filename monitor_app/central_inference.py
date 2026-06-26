@@ -4,6 +4,9 @@ import time
 from typing import Callable, Optional
 from monitor_app.evidence import EvidencePacket
 from monitor_app import profile_store
+from monitor_app.logger import get_module_logger
+
+logger = get_module_logger("Central Inference")
 
 class InferenceTask:
     def __init__(self, packet: EvidencePacket):
@@ -27,6 +30,7 @@ class CentralInferenceManager:
         self.hysteresis_timeout = 3.0  # seconds
         self.inference_paused = False
         self.last_gpu_retry_time = 0.0
+        self.frame_indices = {}
 
     def has_active_tracks(self, camera_id: str) -> bool:
         with self.lock:
@@ -37,6 +41,16 @@ class CentralInferenceManager:
         with self.lock:
             self.last_active_track_times[str(camera_id)] = time.time()
 
+    def get_state(self):
+        from monitor_app.health import ComponentState
+        if not self.running:
+            return ComponentState.IDLE
+        if self.inference_paused:
+            return ComponentState.RECOVERING
+        if self.task_queue.full():
+            return ComponentState.WAITING
+        return ComponentState.RUNNING
+
     def start(self):
         with self.lock:
             if self.running:
@@ -44,7 +58,16 @@ class CentralInferenceManager:
             self.running = True
             self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
             self.worker_thread.start()
-            print("Central Inference Queue Worker started.")
+            
+            # Start performance monitor
+            from monitor_app.monitor_logging import get_performance_monitor
+            get_performance_monitor().start()
+            
+            # Register with Health Monitor
+            from monitor_app.health import get_health_monitor
+            get_health_monitor().register_component("Central Inference", self.get_state)
+            
+            logger.info("Queue Worker started.")
 
     def stop(self):
         with self.lock:
@@ -57,7 +80,11 @@ class CentralInferenceManager:
                 pass
             self.worker_thread.join(timeout=1.0)
             self.worker_thread = None
-            print("Central Inference Queue Worker stopped.")
+            
+        # Stop performance monitor
+        from monitor_app.monitor_logging import get_performance_monitor
+        get_performance_monitor().stop()
+        logger.info("Queue Worker stopped.")
 
     def _initialize_engine(self):
         from monitor_app.ai_engine import MotionOptimizedEngine, BasicMotionEngine, TF_AVAILABLE, YOLO_AVAILABLE
@@ -67,7 +94,7 @@ class CentralInferenceManager:
 
         ai_available = TF_AVAILABLE or YOLO_AVAILABLE
         if ai_available and MotionOptimizedEngine is not None:
-            print("Central Inference initializing MotionOptimizedEngine (YOLO-GPU + MoveNet-CPU)...")
+            logger.info("Initializing MotionOptimizedEngine (YOLO-GPU + MoveNet-CPU)...")
             self.engine = MotionOptimizedEngine(
                 debug=False,
                 sensitivity=profile,
@@ -78,7 +105,7 @@ class CentralInferenceManager:
                 force_yolo_gpu=True
             )
         elif ai_available and BasicMotionEngine is not None:
-            print("Central Inference initializing BasicMotionEngine fallback...")
+            logger.info("Initializing BasicMotionEngine fallback...")
             self.engine = BasicMotionEngine(sensitivity=profile)
 
     def _worker_loop(self):
@@ -86,7 +113,7 @@ class CentralInferenceManager:
         try:
             self._initialize_engine()
         except Exception as e:
-            print(f"Central Inference Engine init failed: {e}")
+            logger.error(f"Engine init failed: {e}")
             self.engine = None
 
         # 2. Main processing loop
@@ -97,22 +124,23 @@ class CentralInferenceManager:
                     break
                 
                 packet = task.packet
+                start_time = time.perf_counter()
                 
                 # Check for GPU recovery retry
                 if self.inference_paused:
                     now = time.time()
                     if now - self.last_gpu_retry_time >= 8.0:
                         self.last_gpu_retry_time = now
-                        print("[Central Inference] Attempting GPU recovery...")
+                        logger.info("Attempting GPU recovery...")
                         try:
                             self._initialize_engine()
                             if self.engine:
                                 self.inference_paused = False
                                 from monitor_app.utils import GlobalState
                                 GlobalState.system_status = "ONLINE"
-                                print("[Central Inference] GPU recovery successful! Resuming AI inference.")
+                                logger.info("GPU recovery successful! Resuming AI inference.")
                         except Exception as retry_ex:
-                            print(f"[Central Inference] GPU recovery failed: {retry_ex}")
+                            logger.error(f"GPU recovery failed: {retry_ex}")
 
                 # Process inference if engine exists and not paused
                 if self.engine and not self.inference_paused:
@@ -129,22 +157,40 @@ class CentralInferenceManager:
                         packet.alerts = res.get("alerts", [])
                         packet.detections = res.get("detections", {"behavior": [], "contraband": []})
                         packet.processing_mode = res.get("processing_mode", "Standard")
+                        packet.tracked_persons = list(res.get("tracked_persons", []))
+                        packet.behavior_evidence = list(res.get("behavior_evidence", []))
+
+                        # Run modular behavior engine (stable ID tracking & concealment analysis)
+                        from monitor_app.behaviors import get_behavior_engine
+                        ai_cfg = profile_store.get_ai_settings()
+                        profile = ai_cfg["active_profile"]
+                        
+                        cam_id = packet.camera_id
+                        self.frame_indices[cam_id] = self.frame_indices.get(cam_id, 0) + 1
+                        frame_index = self.frame_indices[cam_id]
+                        
+                        get_behavior_engine().analyze_packet(packet, frame_index, profile)
 
                         # --- PHASE 5: FUSION, DECISION & ALERT ROUTING ---
                         try:
                             from monitor_app.fusion import get_camera_fusion
                             from monitor_app.decision import get_decision_engine
-                            from monitor_app.alert_manager import get_alert_manager
+                            from monitor_app.events import get_event_bus
 
                             # 1. Update Fused Telemetry State
                             get_camera_fusion().update(packet)
 
                             # 2. Evaluate Decision
                             decision_engine = get_decision_engine()
+                            
+                            # Publish Tick to allow Hysteresis state machine to progress
+                            get_event_bus().publish("FRAME_TICK", camera_id=packet.camera_id)
+                            
                             if decision_engine.evaluate_trigger(packet):
-                                # 3. Command Alert execution
+                                # 3. Command Alert execution via Event Bus
                                 evt_type, conf_scores = decision_engine.get_event_details(packet)
-                                get_alert_manager().trigger_alert(
+                                get_event_bus().publish(
+                                    "DECISION_TRIGGER",
                                     camera_id=packet.camera_id,
                                     event_type=evt_type,
                                     confidence_scores=conf_scores,
@@ -152,10 +198,10 @@ class CentralInferenceManager:
                                     ai_results=res
                                 )
                         except Exception as route_ex:
-                            print(f"Central Inference Phase 5 Routing Error: {route_ex}")
+                            logger.error(f"Phase 5 Routing Error: {route_ex}")
 
                     except Exception as ex:
-                        print(f"Central Inference processing error for Cam {packet.camera_id}: {ex}")
+                        logger.error(f"Processing error: {ex}", camera_id=packet.camera_id)
                         packet.processing_mode = "Inference Error"
                         
                         # GPU exception recovery trigger:
@@ -164,9 +210,14 @@ class CentralInferenceManager:
                         self.last_gpu_retry_time = time.time()
                         from monitor_app.utils import GlobalState
                         GlobalState.system_status = "GPU inference unavailable"
-                        print("[Central Inference] GPU exception detected. Pausing AI inference. Operator notified: GPU inference unavailable.")
+                        logger.error("GPU exception detected. Pausing AI inference. Operator notified: GPU inference unavailable.")
                 else:
                     packet.processing_mode = "GPU inference unavailable" if self.inference_paused else "No AI Engine Loaded"
+
+                # Track performance latency
+                latency = time.perf_counter() - start_time
+                from monitor_app.monitor_logging import get_performance_monitor
+                get_performance_monitor().track_frame(latency)
 
                 task.result = packet
                 task.event.set()
@@ -174,7 +225,7 @@ class CentralInferenceManager:
             except queue.Empty:
                 continue
             except Exception as e:
-                print(f"Central Inference worker loop error: {e}")
+                logger.error(f"worker loop error: {e}")
 
     def submit_task(self, packet: EvidencePacket) -> EvidencePacket:
         """
@@ -194,7 +245,11 @@ class CentralInferenceManager:
                     # Release dropped task immediately returning unprocessed packet
                     dropped_task.result = dropped_task.packet
                     dropped_task.packet.processing_mode = "Queue Drop (Backpressure)"
-                    print(f"[Queue] Backpressure detected on Cam {dropped_task.packet.camera_id}. Dropping oldest frame to preserve real-time latency.")
+                    
+                    from monitor_app.monitor_logging import SystemEvents, get_performance_monitor
+                    get_performance_monitor().track_dropped_frame()
+                    SystemEvents.queue_overflow(dropped_task.packet.camera_id, self.task_queue.qsize())
+                    
                     dropped_task.event.set()
                     self.task_queue.task_done()
                 except queue.Empty:
@@ -206,7 +261,9 @@ class CentralInferenceManager:
             # Timeout recovery
             task.result = packet
             packet.processing_mode = "Inference Timeout"
-            print(f"[Queue] Timeout waiting for Cam {packet.camera_id} inference.")
+            
+            from monitor_app.monitor_logging import SystemEvents
+            SystemEvents.inference_timeout(packet.camera_id, 5.0)
         return task.result
 
 # Global Centralized Inference Manager Singleton

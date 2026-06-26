@@ -7,6 +7,8 @@ from collections import deque
 from datetime import datetime
 from PIL import Image
 
+from monitor_app.evidence import TrackedPerson
+
 
 # ==========================================
 # CAPSTONE DEFENSE DEBUGGER
@@ -121,13 +123,6 @@ class MotionOptimizedEngine:
         self.stats = {"total": 0, "ai_runs": 0, "skipped": 0}
         self.trackers = {}
         self.yolo_trackers = {}
-        
-        # Concealment feature - separate stable-ID tracking layer (hip-centroid matching)
-        # Does NOT touch self.trackers (used by classify_behavior)
-        self.concealment_trackers = {}
-        self.CONCEALMENT_MAX_MATCH_DIST = 80.0   # px, tune based on your frame resolution
-        self.CONCEALMENT_GRACE_FRAMES = 5        # frames a person can vanish before dropped
-        
         self.last_run = {}  # For throttling
 
         custom_vals = kwargs.get("custom_values")
@@ -330,64 +325,7 @@ class MotionOptimizedEngine:
         cv2.putText(res["frame"], res["processing_mode"], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         return res
 
-    def _match_concealment_ids(self, cam_id, detected_people):
-        """
-        detected_people: list of dicts, one per detected person this frame:
-            [{"p_id": <raw movenet index>, "hip_centroid": (x, y), "kps": person_array}, ...]
-        Returns: list of same dicts, each with an added "stable_id" key.
-        """
-        if cam_id not in self.concealment_trackers:
-            self.concealment_trackers[cam_id] = {"next_id": 0, "people": {}}
 
-        cam_tracker = self.concealment_trackers[cam_id]
-        existing = cam_tracker["people"]
-        matched_stable_ids = set()
-
-        for person in detected_people:
-            cx, cy = person["hip_centroid"]
-            best_id = None
-            best_dist = self.CONCEALMENT_MAX_MATCH_DIST
-
-            for stable_id, data in existing.items():
-                if stable_id in matched_stable_ids:
-                    continue  # already claimed this frame
-                ex, ey = data["hip_centroid"]
-                dist = ((cx - ex) ** 2 + (cy - ey) ** 2) ** 0.5
-                if dist < best_dist:
-                    best_dist = dist
-                    best_id = stable_id
-
-            if best_id is not None:
-                # Matched to an existing tracked person
-                person["stable_id"] = best_id
-                existing[best_id]["hip_centroid"] = (cx, cy)
-                existing[best_id]["last_seen_frame"] = self.stats["total"]
-                matched_stable_ids.add(best_id)
-            else:
-                # New person - assign fresh stable_id
-                new_id = cam_tracker["next_id"]
-                cam_tracker["next_id"] += 1
-                existing[new_id] = {
-                    "hip_centroid": (cx, cy),
-                    "last_seen_frame": self.stats["total"],
-                    "left_wrist_missing_since": None,
-                    "right_wrist_missing_since": None,
-                    "concealment_flagged": False,
-                    "cooldown_until_frame": 0,
-                }
-                person["stable_id"] = new_id
-                matched_stable_ids.add(new_id)
-
-        # Drop stale entries (not seen within grace period)
-        current_frame = self.stats["total"]
-        stale_ids = [
-            sid for sid, data in existing.items()
-            if current_frame - data["last_seen_frame"] > self.CONCEALMENT_GRACE_FRAMES
-        ]
-        for sid in stale_ids:
-            del existing[sid]
-
-        return detected_people
 
     def _run_movenet_logic(self, res, cam_id):
         img_input = cv2.cvtColor(res["frame"], cv2.COLOR_BGR2RGB)
@@ -420,21 +358,31 @@ class MotionOptimizedEngine:
                         "score": score
                     })
 
+                    tracked_person = TrackedPerson(
+                        stable_id=-1,
+                        raw_person_id=i,
+                        camera_id=cam_id,
+                        keypoints=person,
+                        bbox=None,
+                        hip_centroid=hip_centroid,
+                        confidence=float(conf),
+                        frame_number=self.stats["total"],
+                        timestamp=time.time(),
+                    )
+                    res.setdefault("tracked_persons", []).append(tracked_person)
+
                     if label in ("Aggressive / Fighting", "Fast Movement"):
                         res["alert_triggered"] = True
                         res["alerts"].append(f"Person {i + 1}: {label.upper()}")
                         CapstoneDebug.log(cam_id, f"ALERT: Fast/Aggressive motion detected for Person {i + 1}")
-                        
-            detected_people = self._match_concealment_ids(cam_id, detected_people)
             res.setdefault("detections", {"behavior": [], "contraband": []})
             for dp in detected_people:
                 res["detections"]["behavior"].append({
                     "person_index": dp["p_id"],
-                    "stable_id": dp["stable_id"],
+                    "stable_id": -1,
                     "label": dp["label"],
                     "score": dp["score"]
                 })
-                CapstoneDebug.log(cam_id, f"Stable ID Test -> p_id: {dp['p_id']} mapped to stable_id: {dp['stable_id']}")
                 
         except Exception as e:
             CapstoneDebug.log(cam_id, f"MoveNet inference error: {e}")
@@ -455,14 +403,15 @@ class MotionOptimizedEngine:
                 if cam_id not in self.yolo_trackers:
                     from ultralytics.utils import IterableSimpleNamespace
                     from ultralytics.trackers.byte_tracker import BYTETracker
+                    from monitor_app.tracker_config import TRACKER_CFG
                     args = IterableSimpleNamespace(
-                        track_thresh=0.25,
-                        track_buffer=30,
-                        match_thresh=0.8,
-                        frame_rate=30,
-                        track_high_thresh=0.5,
+                        track_thresh=TRACKER_CFG.get("track_thresh", 0.5),
+                        track_buffer=TRACKER_CFG.get("track_buffer", 30),
+                        match_thresh=TRACKER_CFG.get("match_thresh", 0.8),
+                        frame_rate=TRACKER_CFG.get("frame_rate", 15),
+                        track_high_thresh=TRACKER_CFG.get("track_thresh", 0.5),
                         track_low_thresh=0.1,
-                        new_track_thresh=0.6,
+                        new_track_thresh=TRACKER_CFG.get("track_thresh", 0.5) + 0.1,
                         fuse_score=False
                     )
                     self.yolo_trackers[cam_id] = BYTETracker(args)

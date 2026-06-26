@@ -8,11 +8,16 @@ import threading
 from collections import deque
 from datetime import datetime
 import monitor_app.utils as utils
+from monitor_app.logger import get_module_logger
+from monitor_app.config import get_config
+
+logger = get_module_logger("Incident Recorder")
 
 class IncidentRecorder:
     """
     Handles state machine, pre-roll buffering, and video recording for incidents.
     States: IDLE -> RECORDING -> COOLDOWN -> IDLE
+    Driven entirely via events from the EventBus.
     """
     IDLE = "IDLE"
     RECORDING = "RECORDING"
@@ -34,11 +39,9 @@ class IncidentRecorder:
         self.pre_roll_buffer = deque(maxlen=75) 
         self.video_writer = None
         
-        # Recording Window
-        self.recording_start_time = 0
+        # Cooldown duration from config
+        self.cooldown_duration = get_config("alert_cooldowns", "default", 25.0)
         self.cooldown_end_time = 0
-        self.record_duration = 10  # Seconds AFTER trigger
-        self.cooldown_duration = 25  # Seconds after recording ends
         
         # Metadata
         self.current_event_id = ""
@@ -49,6 +52,12 @@ class IncidentRecorder:
 
         self._init_db()
         self._ensure_dir()
+
+        # Subscribe to Event Bus events
+        from monitor_app.events import get_event_bus
+        get_event_bus().subscribe("INCIDENT_START", self.handle_incident_start)
+        get_event_bus().subscribe("EVIDENCE_ADDED", self.handle_evidence_added)
+        get_event_bus().subscribe("INCIDENT_STOP", self.handle_incident_stop)
 
     def _init_db(self):
         try:
@@ -70,13 +79,11 @@ class IncidentRecorder:
                     review_status TEXT DEFAULT 'PENDING'
                 )
             ''')
-
             self._ensure_columns(cursor)
-
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"Database Init Error: {e}")
+            logger.error(f"Database Init Error: {e}", camera_id=self.camera_id)
 
     def _ensure_columns(self, cursor):
         cursor.execute("PRAGMA table_info(incidents)")
@@ -102,6 +109,30 @@ class IncidentRecorder:
         if not os.path.exists(self.recordings_dir):
             os.makedirs(self.recordings_dir)
 
+    def handle_incident_start(self, camera_id, incident_id, event_type, frame, ai_results):
+        if str(camera_id).zfill(2) != self.camera_id:
+            return
+        self.trigger_recording(event_type, [], frame, incident_id, ai_results)
+
+    def handle_evidence_added(self, camera_id, incident_id, event_type, confidence_scores):
+        if str(camera_id).zfill(2) != self.camera_id:
+            return
+        if self.state == self.RECORDING and self.current_event_id == incident_id:
+            # Merge evidence name
+            if event_type not in self.current_event_type:
+                if self.current_event_type:
+                    self.current_event_type += f" + {event_type}"
+                else:
+                    self.current_event_type = event_type
+            # Append confidence scores
+            self.confidence_scores.extend(confidence_scores)
+
+    def handle_incident_stop(self, camera_id, incident_id):
+        if str(camera_id).zfill(2) != self.camera_id:
+            return
+        if self.state == self.RECORDING and self.current_event_id == incident_id:
+            self.stop_recording()
+
     def process_frame(self, bgr_frame, ai_results):
         """
         Called every frame. bgr_frame MUST be in BGR format for OpenCV writer.
@@ -114,46 +145,43 @@ class IncidentRecorder:
         self.last_write_time = current_time
 
         # 2. ALWAYS BUFFER (Pre-roll persistence across all states)
-        # We store a copy to avoid external modifications
         self.pre_roll_buffer.append(bgr_frame.copy())
 
-        # 3. STATE MACHINE (Recording mode only)
+        # 3. STATE MACHINE
         if self.state == self.RECORDING:
             if self.video_writer:
                 self.video_writer.write(bgr_frame)
-            
-            # Autonomously stop after duration ONLY if not manually stopped
-            if time.time() - self.recording_start_time >= self.record_duration:
-                self.stop_recording()
                 
         elif self.state == self.COOLDOWN:
             if time.time() >= self.cooldown_end_time:
                 self.state = self.IDLE
-                print(f"Cam {self.camera_id}: Status -> IDLE")
+                logger.info(f"Status -> IDLE", camera_id=self.camera_id)
 
-    def trigger_recording(self, event_type, confidence_scores, current_frame, ai_results=None):
-        """Exposed method to start recording, called by AlertManager."""
-        if self.state == self.IDLE:
-            self._start_recording(current_frame, event_type, confidence_scores)
+    def trigger_recording(self, event_type, confidence_scores, current_frame, incident_id, ai_results=None):
+        """Starts recording, called by event handler."""
+        if self.state in (self.IDLE, self.COOLDOWN):
+            self._start_recording(current_frame, event_type, confidence_scores, incident_id)
 
     def stop_recording(self):
-        """Exposed method to stop recording, called by AlertManager."""
+        """Stops recording, called by event handler."""
         if self.state == self.RECORDING:
             self._stop_recording()
 
-    def _start_recording(self, current_frame, event_type, confidence_scores):
+    def _start_recording(self, current_frame, event_type, confidence_scores, incident_id):
         now = datetime.now()
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H-%M-%S")
         
         self.current_event_type = event_type
+        self.current_event_id = incident_id
         
         # Sanitize and Format Filename
         safe_type = re.sub(r'[^\w\-_\. ]', '_', self.current_event_type).lower().replace(" ", "_")
         if not safe_type: safe_type = "alert"
         
         dir_path = os.path.join(self.recordings_dir, f"cam_{self.camera_id}", date_str)
-        if not os.path.exists(dir_path): os.makedirs(dir_path)
+        if not os.path.exists(dir_path): 
+            os.makedirs(dir_path)
             
         filename = f"event_{date_str}_{time_str}_cam{self.camera_id}_{safe_type}.mp4"
         self.current_video_path = os.path.join(dir_path, filename)
@@ -168,18 +196,15 @@ class IncidentRecorder:
             self.video_writer = cv2.VideoWriter(self.current_video_path, fourcc, self.target_fps, (w, h))
 
         # Write Pre-roll (SNAPSHOT - do not drain buffer)
-        print(f"Cam {self.camera_id}: Triggered! Evidence: {self.current_event_type}")
         snapshot = list(self.pre_roll_buffer)
         for buf_frame in snapshot:
             self.video_writer.write(buf_frame)
             
-        # Metadata Save
-        self.current_event_id = f"EVT_{date_str.replace('-','')}_{time_str.replace('-','')}_{self.camera_id}"
         self.current_timestamp_start = now.isoformat()
         self.confidence_scores = confidence_scores
         
         self.state = self.RECORDING
-        self.recording_start_time = time.time()
+        logger.info(f"Recording STARTED | Video: {filename}", camera_id=self.camera_id, incident_id=self.current_event_id)
 
     def _stop_recording(self):
         if self.video_writer:
@@ -191,7 +216,7 @@ class IncidentRecorder:
         
         self.state = self.COOLDOWN
         self.cooldown_end_time = time.time() + self.cooldown_duration
-        print(f"Cam {self.camera_id}: Entering COOLDOWN.")
+        logger.info(f"Recording STOPPED (Entering Cooldown)", camera_id=self.camera_id, incident_id=self.current_event_id)
 
     def _save_metadata(self, end_time):
         try:
@@ -218,7 +243,7 @@ class IncidentRecorder:
             if self.on_incident_callback:
                 self.on_incident_callback(self.current_event_id, self.current_event_type, self.current_video_path)
         except Exception as e:
-            print(f"Metadata Save Error: {e}")
+            logger.error(f"Metadata Save Error: {e}", camera_id=self.camera_id, incident_id=self.current_event_id)
 
     def get_status_info(self):
         if self.state == self.RECORDING:

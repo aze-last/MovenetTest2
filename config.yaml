@@ -1,0 +1,33 @@
+config_version: 1
+
+# Engineering and Infrastructure Settings
+# DO NOT place operator tuning (e.g. confidence thresholds) here.
+
+logging:
+  level: INFO # DEBUG, INFO, WARNING, ERROR
+  file_rotation: daily
+  console: true
+  file: true
+  keep_days: 30
+
+alert_cooldowns:
+  default: 25.0
+  fight: 30.0
+  knife: 60.0
+  cellphone: 30.0
+
+motion_gate:
+  enable_delay: 0.5
+  disable_delay: 3.0
+  minimum_active_duration: 1.0
+
+camera_reconnect:
+  initial_backoff: 1.0
+  max_backoff: 60.0
+  factor: 2.0
+
+incident_merging:
+  merge_window: 10.0 # Seconds within which to merge new evidence into the same incident
+
+health_monitor:
+  check_interval: 10.0 # Watchdog loop interval in seconds
