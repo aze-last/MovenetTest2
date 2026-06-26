@@ -1,0 +1,9 @@
+{
+  "id": "phase_3_benchmark",
+  "title": "Phase 3: Benchmarking Phase",
+  "status": "COMPLETED",
+  "assigned_to": "coordinator@cellwatch-ai",
+  "description": "Create monitor_app/benchmark.py to run load tests on the centralized inference worker with 4 mock camera feeds, capturing latencies, memory footprint, and VRAM utilization.",
+  "created_at": "2026-06-26T15:42:34Z",
+  "updated_at": "2026-06-26T15:44:53Z"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "phase_1_gating",
+  "title": "Phase 1: Communication Standardization & Local Gating",
+  "status": "COMPLETED",
+  "assigned_to": "coordinator@cellwatch-ai",
+  "description": "Standardize camera-to-AI communications with EvidencePacket and implement local CPU-based motion gating in camera capture loops.",
+  "created_at": "2026-06-26T15:37:17Z",
+  "updated_at": "2026-06-26T15:38:35Z"
+}

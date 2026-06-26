@@ -1,0 +1,9 @@
+{
+  "id": "phase_2_queue",
+  "title": "Phase 2: Centralized Inference Queue & MoveNet CPU Migration",
+  "status": "COMPLETED",
+  "assigned_to": "coordinator@cellwatch-ai",
+  "description": "Implement CentralInferenceQueue worker in monitor_app/central_inference.py, migrate MoveNet to TFLite CPU execution, and run centralized batch inference.",
+  "created_at": "2026-06-26T15:38:37Z",
+  "updated_at": "2026-06-26T15:42:27Z"
+}
