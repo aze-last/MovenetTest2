@@ -8,6 +8,7 @@ import threading
 import queue
 import time
 from monitor_app.incident_record import IncidentRecorder
+from monitor_app.evidence import EvidencePacket
 
 # OpenCV
 try:
@@ -467,20 +468,61 @@ class CameraFeedWidget(ttk.Frame):
 
             # Process AI in the background
             global _pose_engine
-            frame_to_show = raw_frame
-            alert_active = False
-            res = {} # Default in case engine fails
+            packet = None
 
             if _pose_engine:
                 try:
-                    res = _pose_engine.process_frame(raw_frame, str(self.camera_id))
-                    frame_to_show = res.get("frame", raw_frame)
-                    alert_active = bool(res.get("alert_triggered", False))
+                    if hasattr(_pose_engine, "detect_motion"):
+                        is_moving, score = _pose_engine.detect_motion(raw_frame, str(self.camera_id))
+                        if is_moving:
+                            # Full AI mode
+                            res = _pose_engine.process_frame(raw_frame, str(self.camera_id))
+                            packet = EvidencePacket(
+                                camera_id=str(self.camera_id),
+                                timestamp=time.time(),
+                                frame=res.get("frame", raw_frame),
+                                motion_detected=True,
+                                motion_score=score,
+                                num_people=res.get("num_people", 0),
+                                alert_triggered=bool(res.get("alert_triggered", False)),
+                                alerts=res.get("alerts", []),
+                                detections=res.get("detections", {"behavior": [], "contraband": []}),
+                                processing_mode=res.get("processing_mode", "Standard")
+                            )
+                        else:
+                            # Skip full AI, gate locally on CPU
+                            annotated_frame = raw_frame.copy()
+                            cv2.putText(annotated_frame, "Power Saving (No Motion)", (10, 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            packet = EvidencePacket(
+                                camera_id=str(self.camera_id),
+                                timestamp=time.time(),
+                                frame=annotated_frame,
+                                motion_detected=False,
+                                motion_score=score,
+                                processing_mode="Power Saving (No Motion)"
+                            )
+                    else:
+                        # Fallback for BasicMotionEngine
+                        res = _pose_engine.process_frame(raw_frame, str(self.camera_id))
+                        packet = EvidencePacket.from_dict(res)
+                        packet.camera_id = str(self.camera_id)
+                        packet.timestamp = time.time()
                 except Exception as e:
                     print(f"Worker AI Error (Cam {self.camera_id}): {e}")
 
+            if packet is None:
+                packet = EvidencePacket(
+                    camera_id=str(self.camera_id),
+                    timestamp=time.time(),
+                    frame=raw_frame,
+                    processing_mode="No Engine"
+                )
+
             # Convert to RGB and resize in background to save main thread time
             try:
+                frame_to_show = packet.frame
+                alert_active = packet.alert_triggered
                 rgb = cv2.cvtColor(frame_to_show, cv2.COLOR_BGR2RGB)
                 # We put the processed data into the queue
                 if self.result_queue.full():
@@ -491,11 +533,7 @@ class CameraFeedWidget(ttk.Frame):
                 self.result_queue.put((rgb, alert_active))
                 
                 # --- INCIDENT RECORDING LOGIC ---
-                # Pass the processed frame (with overlays) to the recorder
-                # This handles state transitions (IDLE -> RECORDING -> COOLDOWN)
-                # and saves video clips + metadata.
-                # NOTE: frame_to_show is BGR which is what OpenCV Writer needs.
-                self.recorder.process_frame(frame_to_show, res)
+                self.recorder.process_frame(frame_to_show, packet.to_dict())
             except Exception as e:
                 print(f"Worker process error: {e}")
 
