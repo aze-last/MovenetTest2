@@ -45,3 +45,7 @@ tmp_check_gpu.py
 installed_packages.txt
 packages_offile/
 packages_offline/
+
+# Zip Archives
+*.zip
+monitor_app.zip
