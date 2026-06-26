@@ -120,6 +120,13 @@ class MotionOptimizedEngine:
         self.yolo_inference_lock = threading.Lock()
         self.stats = {"total": 0, "ai_runs": 0, "skipped": 0}
         self.trackers = {}
+        
+        # Concealment feature - separate stable-ID tracking layer (hip-centroid matching)
+        # Does NOT touch self.trackers (used by classify_behavior)
+        self.concealment_trackers = {}
+        self.CONCEALMENT_MAX_MATCH_DIST = 80.0   # px, tune based on your frame resolution
+        self.CONCEALMENT_GRACE_FRAMES = 5        # frames a person can vanish before dropped
+        
         self.last_run = {}  # For throttling
 
         custom_vals = kwargs.get("custom_values")
@@ -328,6 +335,65 @@ class MotionOptimizedEngine:
         cv2.putText(res["frame"], res["processing_mode"], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         return res
 
+    def _match_concealment_ids(self, cam_id, detected_people):
+        """
+        detected_people: list of dicts, one per detected person this frame:
+            [{"p_id": <raw movenet index>, "hip_centroid": (x, y), "kps": person_array}, ...]
+        Returns: list of same dicts, each with an added "stable_id" key.
+        """
+        if cam_id not in self.concealment_trackers:
+            self.concealment_trackers[cam_id] = {"next_id": 0, "people": {}}
+
+        cam_tracker = self.concealment_trackers[cam_id]
+        existing = cam_tracker["people"]
+        matched_stable_ids = set()
+
+        for person in detected_people:
+            cx, cy = person["hip_centroid"]
+            best_id = None
+            best_dist = self.CONCEALMENT_MAX_MATCH_DIST
+
+            for stable_id, data in existing.items():
+                if stable_id in matched_stable_ids:
+                    continue  # already claimed this frame
+                ex, ey = data["hip_centroid"]
+                dist = ((cx - ex) ** 2 + (cy - ey) ** 2) ** 0.5
+                if dist < best_dist:
+                    best_dist = dist
+                    best_id = stable_id
+
+            if best_id is not None:
+                # Matched to an existing tracked person
+                person["stable_id"] = best_id
+                existing[best_id]["hip_centroid"] = (cx, cy)
+                existing[best_id]["last_seen_frame"] = self.stats["total"]
+                matched_stable_ids.add(best_id)
+            else:
+                # New person - assign fresh stable_id
+                new_id = cam_tracker["next_id"]
+                cam_tracker["next_id"] += 1
+                existing[new_id] = {
+                    "hip_centroid": (cx, cy),
+                    "last_seen_frame": self.stats["total"],
+                    "left_wrist_missing_since": None,
+                    "right_wrist_missing_since": None,
+                    "concealment_flagged": False,
+                    "cooldown_until_frame": 0,
+                }
+                person["stable_id"] = new_id
+                matched_stable_ids.add(new_id)
+
+        # Drop stale entries (not seen within grace period)
+        current_frame = self.stats["total"]
+        stale_ids = [
+            sid for sid, data in existing.items()
+            if current_frame - data["last_seen_frame"] > self.CONCEALMENT_GRACE_FRAMES
+        ]
+        for sid in stale_ids:
+            del existing[sid]
+
+        return detected_people
+
     def _run_movenet_logic(self, res, cam_id):
         img_input = cv2.cvtColor(res["frame"], cv2.COLOR_BGR2RGB)
         img_input = cv2.resize(img_input, (256, 256))
@@ -336,11 +402,21 @@ class MotionOptimizedEngine:
         try:
             outputs = self.movenet(tensor)
             kpts = outputs["output_0"].numpy()[0]
+            
+            detected_people = []
 
             for i in range(6):  # Max 6 people
                 person = kpts[i, :51].reshape(17, 3)
                 conf = np.mean(person[:, 2])
                 if conf > 0.2:
+                    hip_l, hip_r = person[11], person[12]
+                    hip_centroid = ((hip_l[1] + hip_r[1]) / 2, (hip_l[0] + hip_r[0]) / 2)
+                    detected_people.append({
+                        "p_id": i,
+                        "hip_centroid": hip_centroid,
+                        "kps": person,
+                    })
+
                     res["num_people"] += 1
                     self.draw_skeleton(res["frame"], person, i)
                     label, score = self.classify_behavior(person, i, cam_id, res["frame"].shape)
@@ -350,6 +426,11 @@ class MotionOptimizedEngine:
                         res["alert_triggered"] = True
                         res["alerts"].append(f"Person {i + 1}: {label.upper()}")
                         CapstoneDebug.log(cam_id, f"ALERT: Fast/Aggressive motion detected for Person {i + 1}")
+                        
+            detected_people = self._match_concealment_ids(cam_id, detected_people)
+            for dp in detected_people:
+                CapstoneDebug.log(cam_id, f"Stable ID Test -> p_id: {dp['p_id']} mapped to stable_id: {dp['stable_id']}")
+                
         except Exception as e:
             CapstoneDebug.log(cam_id, f"MoveNet inference error: {e}")
 

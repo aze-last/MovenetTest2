@@ -5,8 +5,12 @@
 1.  **Activate Expertise**: Activate the `cellwatch-expert` skill (`activate_skill(name='cellwatch-expert')`) to access institutional guardrails.
 2.  **Invoke Agent Roles**: Adhere to the relevant worker role from the `.agent-team` orchestration framework:
     *   **Coordinator**: **THIS FILE (GEMINI.md)** is your template. Focus on orchestration, task management, and project-wide integrity.
-    *   **Logic-Reviewer**: Consult `.agent-team/templates/logic-reviewer.md` for AI and backend logic tasks.
-    *   **UI/UX Auditor / Redesigner**: Consult `.agent-team/templates/ui-ux-auditor-redesigner.md` for frontend updates.
+    *   **MoveNet-Specialist**: Consult `.agent-team/templates/movenet-specialist.md` for human posture, concealment logic, and motion gating.
+    *   **YOLO-Specialist**: Consult `.agent-team/templates/yolo-specialist.md` for object/contraband detection and custom model tuning.
+    *   **State & Identity Manager**: Consult `.agent-team/templates/state-identity-manager.md` for `app_state.db`, settings, auth, and branding.
+    *   **Incident & Ops Analyst**: Consult `.agent-team/templates/incident-operations-analyst.md` for video buffering, `incidents.db`, and reports.
+    *   **Logic-Reviewer**: Consult `.agent-team/templates/logic-reviewer.md` for general backend logic tasks.
+    *   **UI/UX Auditor / Redesigner**: Consult `.agent-team/templates/ui-ux-auditor-redesigner.md` for general frontend updates.
 3.  **Consult Workflows**: Read the relevant workflow reference in the `cellwatch-expert` skill (e.g., `references/ai.md`) before writing any code.
 
 ## 👑 Coordinator Objectives & Rules
