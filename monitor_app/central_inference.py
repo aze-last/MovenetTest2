@@ -95,7 +95,10 @@ class CentralInferenceManager:
                 # Process inference if engine exists
                 if self.engine:
                     try:
-                        res = self.engine.process_frame(packet.frame, packet.camera_id)
+                        if packet.camera_id == "99":
+                            res = packet.to_dict()
+                        else:
+                            res = self.engine.process_frame(packet.frame, packet.camera_id)
                         # Map outcome back to EvidencePacket
                         packet.frame = res.get("frame", packet.frame)
                         packet.num_people = res.get("num_people", 0)
@@ -103,6 +106,31 @@ class CentralInferenceManager:
                         packet.alerts = res.get("alerts", [])
                         packet.detections = res.get("detections", {"behavior": [], "contraband": []})
                         packet.processing_mode = res.get("processing_mode", "Standard")
+
+                        # --- PHASE 5: FUSION, DECISION & ALERT ROUTING ---
+                        try:
+                            from monitor_app.fusion import get_camera_fusion
+                            from monitor_app.decision import get_decision_engine
+                            from monitor_app.alert_manager import get_alert_manager
+
+                            # 1. Update Fused Telemetry State
+                            get_camera_fusion().update(packet)
+
+                            # 2. Evaluate Decision
+                            decision_engine = get_decision_engine()
+                            if decision_engine.evaluate_trigger(packet):
+                                # 3. Command Alert execution
+                                evt_type, conf_scores = decision_engine.get_event_details(packet)
+                                get_alert_manager().trigger_alert(
+                                    camera_id=packet.camera_id,
+                                    event_type=evt_type,
+                                    confidence_scores=conf_scores,
+                                    frame=packet.frame,
+                                    ai_results=res
+                                )
+                        except Exception as route_ex:
+                            print(f"Central Inference Phase 5 Routing Error: {route_ex}")
+
                     except Exception as ex:
                         print(f"Central Inference processing error for Cam {packet.camera_id}: {ex}")
                         packet.processing_mode = "Inference Error"

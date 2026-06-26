@@ -426,6 +426,10 @@ class CameraFeedWidget(ttk.Frame):
         self.running = True
         self._consecutive_failures = 0
 
+        # Register with AlertManager
+        from monitor_app.alert_manager import get_alert_manager
+        get_alert_manager().register_recorder(self.camera_id, self.recorder)
+
         if CV2_AVAILABLE and self.source is not None:
             self._open_capture()
 
@@ -559,6 +563,8 @@ class CameraFeedWidget(ttk.Frame):
             self.cap.release()
             self.cap = None
         # Unregister camera
+        from monitor_app.alert_manager import get_alert_manager
+        get_alert_manager().unregister_recorder(self.camera_id)
         utils.GlobalState.unregister_camera(self.camera_id)
 
     def update_loop(self):

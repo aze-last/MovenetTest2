@@ -117,41 +117,38 @@ class IncidentRecorder:
         # We store a copy to avoid external modifications
         self.pre_roll_buffer.append(bgr_frame.copy())
 
-        # 3. STATE MACHINE
-        if self.state == self.IDLE:
-            # Check for trigger rule (Strict trigger check)
-            if ai_results.get("alert_triggered"):
-                self._start_recording(bgr_frame, ai_results)
-                
-        elif self.state == self.RECORDING:
+        # 3. STATE MACHINE (Recording mode only)
+        if self.state == self.RECORDING:
             if self.video_writer:
                 self.video_writer.write(bgr_frame)
             
-            # Check recording limit
+            # Autonomously stop after duration ONLY if not manually stopped
             if time.time() - self.recording_start_time >= self.record_duration:
-                self._stop_recording()
+                self.stop_recording()
                 
         elif self.state == self.COOLDOWN:
             if time.time() >= self.cooldown_end_time:
                 self.state = self.IDLE
                 print(f"Cam {self.camera_id}: Status -> IDLE")
 
-    def _start_recording(self, current_frame, ai_results):
+    def trigger_recording(self, event_type, confidence_scores, current_frame, ai_results=None):
+        """Exposed method to start recording, called by AlertManager."""
+        if self.state == self.IDLE:
+            self._start_recording(current_frame, event_type, confidence_scores)
+
+    def stop_recording(self):
+        """Exposed method to stop recording, called by AlertManager."""
+        if self.state == self.RECORDING:
+            self._stop_recording()
+
+    def _start_recording(self, current_frame, event_type, confidence_scores):
         now = datetime.now()
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H-%M-%S")
         
-        # 1. Standardized metadata parsing
-        detections = ai_results.get("detections", {})
-        behaviors = [d.get('label', 'Unknown') for d in detections.get('behavior', []) 
-                    if any(x in d.get('label', '') for x in ["Aggressive", "Suspicious", "Fast"])]
-        items = [d.get('item', 'Item') for d in detections.get('contraband', [])]
+        self.current_event_type = event_type
         
-        # Cleanup labels
-        unique_labels = list(set([b.split(":")[0].strip() for b in behaviors] + items))
-        self.current_event_type = " + ".join(unique_labels) if unique_labels else "Alert"
-        
-        # 2. Sanitize and Format Filename
+        # Sanitize and Format Filename
         safe_type = re.sub(r'[^\w\-_\. ]', '_', self.current_event_type).lower().replace(" ", "_")
         if not safe_type: safe_type = "alert"
         
@@ -161,9 +158,8 @@ class IncidentRecorder:
         filename = f"event_{date_str}_{time_str}_cam{self.camera_id}_{safe_type}.mp4"
         self.current_video_path = os.path.join(dir_path, filename)
         
-        # 3. Initialize Video Writer (Dynamic Size)
+        # Initialize Video Writer (Dynamic Size)
         h, w = current_frame.shape[:2]
-        # mp4v is more widely supported in default OpenCV builds.
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         self.video_writer = cv2.VideoWriter(self.current_video_path, fourcc, self.target_fps, (w, h))
         
@@ -171,20 +167,16 @@ class IncidentRecorder:
             fourcc = cv2.VideoWriter_fourcc(*'avc1')
             self.video_writer = cv2.VideoWriter(self.current_video_path, fourcc, self.target_fps, (w, h))
 
-        # 4. Write Pre-roll (SNAPSHOT - do not drain buffer)
+        # Write Pre-roll (SNAPSHOT - do not drain buffer)
         print(f"Cam {self.camera_id}: Triggered! Evidence: {self.current_event_type}")
         snapshot = list(self.pre_roll_buffer)
         for buf_frame in snapshot:
             self.video_writer.write(buf_frame)
             
-        # 5. Metadata Save
+        # Metadata Save
         self.current_event_id = f"EVT_{date_str.replace('-','')}_{time_str.replace('-','')}_{self.camera_id}"
         self.current_timestamp_start = now.isoformat()
-        
-        # Capture confidence as JSON
-        scores_b = [d.get('score', 0) for d in detections.get('behavior', [])]
-        scores_c = [d.get('confidence', 0) for d in detections.get('contraband', [])]
-        self.confidence_scores = scores_b + scores_c
+        self.confidence_scores = confidence_scores
         
         self.state = self.RECORDING
         self.recording_start_time = time.time()
@@ -235,4 +227,3 @@ class IncidentRecorder:
             remaining = int(self.cooldown_end_time - time.time())
             return f"COOLDOWN ({max(0, remaining)}s)", "#FFA500"
         return "NORMAL", utils.COLOR_SUCCESS
-
