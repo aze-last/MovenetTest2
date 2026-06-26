@@ -25,6 +25,8 @@ class CentralInferenceManager:
         self.lock = threading.Lock()
         self.last_active_track_times = {}
         self.hysteresis_timeout = 3.0  # seconds
+        self.inference_paused = False
+        self.last_gpu_retry_time = 0.0
 
     def has_active_tracks(self, camera_id: str) -> bool:
         with self.lock:
@@ -57,29 +59,32 @@ class CentralInferenceManager:
             self.worker_thread = None
             print("Central Inference Queue Worker stopped.")
 
+    def _initialize_engine(self):
+        from monitor_app.ai_engine import MotionOptimizedEngine, BasicMotionEngine, TF_AVAILABLE, YOLO_AVAILABLE
+        ai_cfg = profile_store.get_ai_settings()
+        profile = ai_cfg["active_profile"]
+        custom_vals = ai_cfg["custom_settings"] if profile == "custom" else None
+
+        ai_available = TF_AVAILABLE or YOLO_AVAILABLE
+        if ai_available and MotionOptimizedEngine is not None:
+            print("Central Inference initializing MotionOptimizedEngine (YOLO-GPU + MoveNet-CPU)...")
+            self.engine = MotionOptimizedEngine(
+                debug=False,
+                sensitivity=profile,
+                custom_values=custom_vals,
+                enable_yolo=True,
+                prefer_gpu=True,
+                force_gpu=True,
+                force_yolo_gpu=True
+            )
+        elif ai_available and BasicMotionEngine is not None:
+            print("Central Inference initializing BasicMotionEngine fallback...")
+            self.engine = BasicMotionEngine(sensitivity=profile)
+
     def _worker_loop(self):
         # 1. Load active settings and initialize AI engine
         try:
-            from monitor_app.ai_engine import MotionOptimizedEngine, BasicMotionEngine, TF_AVAILABLE, YOLO_AVAILABLE
-            ai_cfg = profile_store.get_ai_settings()
-            profile = ai_cfg["active_profile"]
-            custom_vals = ai_cfg["custom_settings"] if profile == "custom" else None
-
-            ai_available = TF_AVAILABLE or YOLO_AVAILABLE
-            if ai_available and MotionOptimizedEngine is not None:
-                print("Central Inference initializing MotionOptimizedEngine (YOLO-GPU + MoveNet-CPU)...")
-                self.engine = MotionOptimizedEngine(
-                    debug=False,
-                    sensitivity=profile,
-                    custom_values=custom_vals,
-                    enable_yolo=True,
-                    prefer_gpu=True,
-                    force_gpu=True,
-                    force_yolo_gpu=True
-                )
-            elif ai_available and BasicMotionEngine is not None:
-                print("Central Inference initializing BasicMotionEngine fallback...")
-                self.engine = BasicMotionEngine(sensitivity=profile)
+            self._initialize_engine()
         except Exception as e:
             print(f"Central Inference Engine init failed: {e}")
             self.engine = None
@@ -92,13 +97,31 @@ class CentralInferenceManager:
                     break
                 
                 packet = task.packet
-                # Process inference if engine exists
-                if self.engine:
+                
+                # Check for GPU recovery retry
+                if self.inference_paused:
+                    now = time.time()
+                    if now - self.last_gpu_retry_time >= 8.0:
+                        self.last_gpu_retry_time = now
+                        print("[Central Inference] Attempting GPU recovery...")
+                        try:
+                            self._initialize_engine()
+                            if self.engine:
+                                self.inference_paused = False
+                                from monitor_app.utils import GlobalState
+                                GlobalState.system_status = "ONLINE"
+                                print("[Central Inference] GPU recovery successful! Resuming AI inference.")
+                        except Exception as retry_ex:
+                            print(f"[Central Inference] GPU recovery failed: {retry_ex}")
+
+                # Process inference if engine exists and not paused
+                if self.engine and not self.inference_paused:
                     try:
                         if packet.camera_id == "99":
                             res = packet.to_dict()
                         else:
                             res = self.engine.process_frame(packet.frame, packet.camera_id)
+                        
                         # Map outcome back to EvidencePacket
                         packet.frame = res.get("frame", packet.frame)
                         packet.num_people = res.get("num_people", 0)
@@ -134,8 +157,16 @@ class CentralInferenceManager:
                     except Exception as ex:
                         print(f"Central Inference processing error for Cam {packet.camera_id}: {ex}")
                         packet.processing_mode = "Inference Error"
+                        
+                        # GPU exception recovery trigger:
+                        # Pause AI, notify UI, set retry timer
+                        self.inference_paused = True
+                        self.last_gpu_retry_time = time.time()
+                        from monitor_app.utils import GlobalState
+                        GlobalState.system_status = "GPU inference unavailable"
+                        print("[Central Inference] GPU exception detected. Pausing AI inference. Operator notified: GPU inference unavailable.")
                 else:
-                    packet.processing_mode = "No AI Engine Loaded"
+                    packet.processing_mode = "GPU inference unavailable" if self.inference_paused else "No AI Engine Loaded"
 
                 task.result = packet
                 task.event.set()

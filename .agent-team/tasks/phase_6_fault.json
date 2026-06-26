@@ -1,0 +1,9 @@
+{
+  "id": "phase_6_fault",
+  "title": "Phase 6: Fault Isolation & Graceful Degradation",
+  "status": "COMPLETED",
+  "assigned_to": "coordinator@cellwatch-ai",
+  "description": "Implement transparent GPU exception isolation (pause, operator notification, auto-retry re-initialization loop every 8 seconds) and camera reconnection loop verification in central_inference.py.",
+  "created_at": "2026-06-26T15:53:20Z",
+  "updated_at": "2026-06-26T15:53:30Z"
+}
