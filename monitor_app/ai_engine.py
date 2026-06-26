@@ -187,22 +187,16 @@ class MotionOptimizedEngine:
             print(f"--- AI ENGINE: Profile switched to '{level}' ---")
 
     def _setup_hardware(self):
-        """Enable GPU for both TF (MoveNet) and Torch (YOLOv8)."""
-        # --- MoveNet / TensorFlow ---
+        """Enable GPU for YOLOv8 and force CPU for TensorFlow/MoveNet to conserve VRAM."""
+        # --- MoveNet / TensorFlow (Forced CPU) ---
         if TF_AVAILABLE:
             try:
-                gpus = tf.config.list_physical_devices('GPU')
-                if gpus:
-                    for gpu in gpus:
-                        tf.config.experimental.set_memory_growth(gpu, True)
-                    self.gpu_enabled = True
-                    print(f"MoveNet: GPU Accelerated — {gpus[0].name}")
-                    CapstoneDebug.log("All", f"MoveNet running on GPU: {gpus[0].name}")
-                else:
-                    print("MoveNet: No GPU detected by TensorFlow — running on CPU")
-                    CapstoneDebug.log("All", "MoveNet fallback: CPU (no TF-visible GPU)")
+                tf.config.set_visible_devices([], 'GPU')
+                self.gpu_enabled = False
+                print("MoveNet: Forced CPU execution (GPU hidden to conserve VRAM)")
+                CapstoneDebug.log("All", "MoveNet running on CPU (visible GPUs: [])")
             except Exception as e:
-                print(f"MoveNet GPU setup error: {e} — falling back to CPU")
+                print(f"MoveNet forced CPU setup error: {e}")
         else:
             print("MoveNet: TensorFlow unavailable — skipped")
 

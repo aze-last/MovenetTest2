@@ -36,6 +36,55 @@ _pose_engine = None
 _yolo_engine = None
 
 
+class LocalMotionGater:
+    """
+    Perform local, lock-free, CPU-based motion check
+    that mirrors the original MotionOptimizedEngine gating parameters.
+    """
+    def __init__(self):
+        # Load settings
+        ai_cfg = profile_store.get_ai_settings()
+        profile = ai_cfg.get("active_profile", "medium")
+        custom_vals = ai_cfg.get("custom_settings") if profile == "custom" else None
+        
+        # Set parameters based on sensitivity
+        if profile == "high":
+            self.motion_threshold = 4500
+            self.motion_ratio = 0.009
+        elif profile == "low":
+            self.motion_threshold = 6000
+            self.motion_ratio = 0.012
+        elif profile == "custom" and custom_vals:
+            self.motion_threshold = int(custom_vals.get("motion_threshold", 5000))
+            self.motion_ratio = float(custom_vals.get("motion_ratio", 0.010))
+        else: # medium (default)
+            self.motion_threshold = 5000
+            self.motion_ratio = 0.010
+
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=300, varThreshold=30, detectShadows=False
+        )
+        self.last_gray = None
+
+    def detect_motion(self, frame):
+        if not CV2_AVAILABLE:
+            return False, 0.0
+            
+        frame_h, frame_w = frame.shape[:2]
+        adaptive_threshold = max(self.motion_threshold, int(frame_h * frame_w * self.motion_ratio))
+        gray = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (15, 15), 0)
+        mask = self.bg_subtractor.apply(gray)
+        score = cv2.countNonZero(mask)
+
+        if self.last_gray is not None:
+            diff = cv2.absdiff(self.last_gray, gray)
+            _, t = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+            score = max(score, cv2.countNonZero(t))
+
+        self.last_gray = gray
+        return score > adaptive_threshold, score
+
+
 class CameraManagementDialog(ctk.CTkToplevel):
     def __init__(self, parent, on_refresh):
         super().__init__(parent)
@@ -218,40 +267,6 @@ class CameraMonitorScreen(ttk.Frame):
             "border": "#1e2c3a"
         }
 
-        global _pose_engine, _yolo_engine
-
-        # --- Load persisted AI profile ---
-        ai_cfg = profile_store.get_ai_settings()
-        _profile = ai_cfg["active_profile"]
-        _custom_vals = ai_cfg["custom_settings"] if _profile == "custom" else None
-
-        # --- motion-optimized engine (MoveNet + optional YOLO) ---
-        if _pose_engine is None and AI_AVAILABLE and MotionOptimizedEngine is not None:
-            try:
-                print("Using MotionOptimizedEngine (MoveNet + optional YOLO)...")
-                _pose_engine = MotionOptimizedEngine(
-                    debug=False,
-                    sensitivity=_profile,
-                    custom_values=_custom_vals,
-                    enable_yolo=True,
-                    prefer_gpu=True,
-                    force_gpu=True,
-                    force_yolo_gpu=True
-                )
-                _yolo_engine = None
-            except Exception as e:
-                print(f"MotionOptimizedEngine init failed: {e}")
-                _pose_engine = None
-
-        # --- fallback motion engine (no TensorFlow) ---
-        if _pose_engine is None and AI_AVAILABLE and BasicMotionEngine is not None:
-            try:
-                print("Using BasicMotionEngine (motion-only, no TensorFlow)...")
-                _pose_engine = BasicMotionEngine(sensitivity=_profile)
-            except Exception as e:
-                print(f"BasicMotionEngine init failed: {e}")
-                _pose_engine = None
-
         self.cameras = []
         self.grid_container = None
         self.create_widgets()
@@ -341,12 +356,16 @@ class CameraMonitorScreen(ttk.Frame):
         root.after(50, lambda: root.attributes("-alpha", 1.0))
 
     def start_monitoring(self):
+        from monitor_app.central_inference import get_inference_manager
+        get_inference_manager().start()
         for cam in self.cameras:
             cam.start()
 
     def stop_monitoring(self):
         for cam in self.cameras:
             cam.stop()
+        from monitor_app.central_inference import get_inference_manager
+        get_inference_manager().stop()
 
 
 class CameraFeedWidget(ttk.Frame):
@@ -366,6 +385,9 @@ class CameraFeedWidget(ttk.Frame):
         
         # Incident detection & recording logic
         self.recorder = IncidentRecorder(self.camera_id)
+        
+        # Local CPU motion gating
+        self.gater = LocalMotionGater()
 
         self.setup_ui()
 
@@ -467,49 +489,35 @@ class CameraFeedWidget(ttk.Frame):
             self._consecutive_failures = 0
 
             # Process AI in the background
-            global _pose_engine
             packet = None
-
-            if _pose_engine:
-                try:
-                    if hasattr(_pose_engine, "detect_motion"):
-                        is_moving, score = _pose_engine.detect_motion(raw_frame, str(self.camera_id))
-                        if is_moving:
-                            # Full AI mode
-                            res = _pose_engine.process_frame(raw_frame, str(self.camera_id))
-                            packet = EvidencePacket(
-                                camera_id=str(self.camera_id),
-                                timestamp=time.time(),
-                                frame=res.get("frame", raw_frame),
-                                motion_detected=True,
-                                motion_score=score,
-                                num_people=res.get("num_people", 0),
-                                alert_triggered=bool(res.get("alert_triggered", False)),
-                                alerts=res.get("alerts", []),
-                                detections=res.get("detections", {"behavior": [], "contraband": []}),
-                                processing_mode=res.get("processing_mode", "Standard")
-                            )
-                        else:
-                            # Skip full AI, gate locally on CPU
-                            annotated_frame = raw_frame.copy()
-                            cv2.putText(annotated_frame, "Power Saving (No Motion)", (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                            packet = EvidencePacket(
-                                camera_id=str(self.camera_id),
-                                timestamp=time.time(),
-                                frame=annotated_frame,
-                                motion_detected=False,
-                                motion_score=score,
-                                processing_mode="Power Saving (No Motion)"
-                            )
-                    else:
-                        # Fallback for BasicMotionEngine
-                        res = _pose_engine.process_frame(raw_frame, str(self.camera_id))
-                        packet = EvidencePacket.from_dict(res)
-                        packet.camera_id = str(self.camera_id)
-                        packet.timestamp = time.time()
-                except Exception as e:
-                    print(f"Worker AI Error (Cam {self.camera_id}): {e}")
+            try:
+                is_moving, score = self.gater.detect_motion(raw_frame)
+                if is_moving:
+                    # Initialize initial packet and submit to centralized GPU queue
+                    from monitor_app.central_inference import get_inference_manager
+                    packet = EvidencePacket(
+                        camera_id=str(self.camera_id),
+                        timestamp=time.time(),
+                        frame=raw_frame,
+                        motion_detected=True,
+                        motion_score=score
+                    )
+                    packet = get_inference_manager().submit_task(packet)
+                else:
+                    # Skip full AI, gate locally on CPU (Power Saving)
+                    annotated_frame = raw_frame.copy()
+                    cv2.putText(annotated_frame, "Power Saving (No Motion)", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    packet = EvidencePacket(
+                        camera_id=str(self.camera_id),
+                        timestamp=time.time(),
+                        frame=annotated_frame,
+                        motion_detected=False,
+                        motion_score=score,
+                        processing_mode="Power Saving (No Motion)"
+                    )
+            except Exception as e:
+                print(f"Worker AI Error (Cam {self.camera_id}): {e}")
 
             if packet is None:
                 packet = EvidencePacket(
