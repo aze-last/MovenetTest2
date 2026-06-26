@@ -194,6 +194,7 @@ class CentralInferenceManager:
                     # Release dropped task immediately returning unprocessed packet
                     dropped_task.result = dropped_task.packet
                     dropped_task.packet.processing_mode = "Queue Drop (Backpressure)"
+                    print(f"[Queue] Backpressure detected on Cam {dropped_task.packet.camera_id}. Dropping oldest frame to preserve real-time latency.")
                     dropped_task.event.set()
                     self.task_queue.task_done()
                 except queue.Empty:
@@ -205,6 +206,7 @@ class CentralInferenceManager:
             # Timeout recovery
             task.result = packet
             packet.processing_mode = "Inference Timeout"
+            print(f"[Queue] Timeout waiting for Cam {packet.camera_id} inference.")
         return task.result
 
 # Global Centralized Inference Manager Singleton

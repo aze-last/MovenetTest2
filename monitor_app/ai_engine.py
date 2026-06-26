@@ -477,7 +477,9 @@ class MotionOptimizedEngine:
 
                 for r in results:
                     # Update ByteTrack with YOLO Boxes
-                    tracks = self.yolo_trackers[cam_id].update(r.boxes, res["frame"])
+                    tracks = self.yolo_trackers[cam_id].update(r.boxes.cpu(), res["frame"])
+                    if len(tracks) > 0:
+                        print(f"[BYTETrack Cam {cam_id}] Updated with {len(tracks)} active tracks.")
                     
                     # Update active track time in central inference manager for hysteresis gating
                     if len(tracks) > 0:

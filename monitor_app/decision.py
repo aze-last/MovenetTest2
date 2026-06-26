@@ -14,7 +14,10 @@ class DecisionEngine:
         """
         Evaluate if a new incident recording should be triggered.
         """
-        return packet.alert_triggered
+        triggered = packet.alert_triggered
+        if triggered:
+            print(f"[Decision Engine] Trigger condition met for Cam {packet.camera_id}! Alerts: {packet.alerts}")
+        return triggered
 
     def get_event_details(self, packet: EvidencePacket) -> Tuple[str, List[float]]:
         """

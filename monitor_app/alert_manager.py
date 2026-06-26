@@ -23,6 +23,7 @@ class AlertManager:
         with self.lock:
             recorder = self.recorders.get(str(camera_id))
             if recorder:
+                print(f"[Alert Manager] Directing Recorder for Cam {camera_id} to start recording event: {event_type} (scores: {confidence_scores})")
                 recorder.trigger_recording(event_type, confidence_scores, frame, ai_results)
 
     def stop_alert(self, camera_id: str):
@@ -30,6 +31,7 @@ class AlertManager:
         with self.lock:
             recorder = self.recorders.get(str(camera_id))
             if recorder:
+                print(f"[Alert Manager] Directing Recorder for Cam {camera_id} to stop recording and transition to cooldown.")
                 recorder.stop_recording()
 
 # Global Alert Manager Singleton

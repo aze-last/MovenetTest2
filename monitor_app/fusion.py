@@ -15,6 +15,7 @@ class CameraFusion:
     def update(self, packet: EvidencePacket):
         with self.lock:
             self.latest_packets[str(packet.camera_id)] = packet
+            print(f"[Fusion] Aggregated telemetry packet for Cam {packet.camera_id}. Total camera feeds in fusion: {len(self.latest_packets)}")
 
     def get_latest_packet(self, camera_id: str) -> EvidencePacket:
         with self.lock:
