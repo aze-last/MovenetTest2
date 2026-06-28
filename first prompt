@@ -1,0 +1,29 @@
+Coordinator,
+
+Read GEMINI.md first.
+
+Then activate only the agents required for this task.
+
+Each agent must stay within its defined responsibilities.
+
+If multiple agents disagree, Architecture Guardian has final authority on architecture, while Coordinator resolves conflicts.
+
+Before coding:
+
+1. Analyze.
+2. Produce a plan.
+3. Identify risks.
+4. Wait for approval.
+
+After approval:
+
+1. Implement.
+2. Validate.
+3. Run regression checks.
+4. Summarize changes.
+5. List affected files.
+6. List remaining technical debt.
+
+Never skip the planning phase for architectural changes.
+Never violate thread safety.
+Never introduce feature creep.
