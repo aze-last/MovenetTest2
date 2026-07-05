@@ -1,127 +1,149 @@
-import math
-from typing import Optional
-from monitor_app.config import get_config
-from monitor_app.evidence import BehaviorEvidence, TrackedPerson
+from __future__ import annotations
+
+from typing import List, Optional
+
+from monitor_app.config import get_concealment_config
+from monitor_app.evidence import (
+    BehaviorEvidence,
+    FusedConcealmentObservation,
+    HandObservationState,
+)
 from monitor_app.behaviors.base import BehaviorDetector
 from monitor_app.monitor_logging import SystemEvents
 
+
 class ConcealmentDetector(BehaviorDetector):
     """
-    Sustained One-Hand Occlusion Detector.
-    Tracks wrist occlusion over time, ignoring side-profile angles using a normalized yaw gate.
+    Sustained concealment detector driven by multi-camera fused hand observations.
     """
+
     name: str = "concealment"
 
     def __init__(self):
-        # Configuration
-        self.duration_frames = get_config("behavior", "concealment", {}).get("duration_frames", 27)
-        self.cooldown_frames = get_config("behavior", "concealment", {}).get("cooldown_frames", 60)
-        self.yaw_gate_threshold = get_config("behavior", "concealment", {}).get("yaw_gate_threshold", 30.0)
-        self.wrist_confidence_threshold = get_config("behavior", "concealment", {}).get("wrist_confidence_threshold", 0.2)
-        
-        # State tracking: stable_id -> {"occlusion_counter": 0, "cooldown_until": 0}
-        self.states = {}
+        self._load_config()
+        self.states: dict[tuple[str, int], dict[str, int]] = {}
 
-    def detect(self, person: TrackedPerson, frame_index: int, sensitivity: str) -> Optional[BehaviorEvidence]:
-        stable_id = person.stable_id
-        camera_id = person.camera_id
-        
-        # Initialize state for this track if missing
-        if stable_id not in self.states:
-            self.states[stable_id] = {
-                "occlusion_counter": 0,
-                "cooldown_until": 0
-            }
-            
-        state = self.states[stable_id]
-        
-        # Check cooldown
-        if frame_index < state["cooldown_until"]:
-            return None
+    def _load_config(self):
+        behavior = get_concealment_config("behavior", {}) or {}
+        self.duration_frames = int(behavior.get("duration_frames", 27))
+        self.cooldown_frames = int(behavior.get("cooldown_frames", 60))
+        self.decay_frames = int(behavior.get("decay_frames", 1))
+        fusion = get_concealment_config("fusion", {}) or {}
+        self.min_fused_confidence = float(fusion.get("min_fused_confidence", 0.75))
 
-        # Keypoints: nose(0), l_shoulder(5), r_shoulder(6), l_hip(11), r_hip(12), l_wrist(9), r_wrist(10)
-        kps = person.keypoints
-        if kps is None or len(kps) <= 12:
-            return None
-            
-        # Get wrist confidences
-        l_wrist_conf = kps[9, 2]
-        r_wrist_conf = kps[10, 2]
-        
-        l_missing = l_wrist_conf < self.wrist_confidence_threshold
-        r_missing = r_wrist_conf < self.wrist_confidence_threshold
-        
-        # Calculate yaw using pre-computed torso height and shoulder width
-        yaw_ratio = 0.0
-        yaw_angle = 0.0
-        
-        if person.torso_height > 0:
-            yaw_ratio = person.shoulder_width / person.torso_height
-            # Estimate angle in degrees (0 is front-facing, 90 is side profile)
-            # Reference ratio: fully frontal shoulder width / torso height is ~1.0
-            cos_yaw = min(1.0, max(0.0, yaw_ratio))
-            yaw_angle = math.acos(cos_yaw) * 180.0 / math.pi
+    def detect(self, person, frame_index: int, sensitivity: str):
+        """Legacy per-person interface — concealment now uses process_fused()."""
+        return None
 
-        # Yaw gate suppression: Only run occlusion check if frontal/rear facing
-        is_frontal = yaw_angle < self.yaw_gate_threshold
-        
-        # Exactly one wrist is hidden
-        one_wrist_occluded = (l_missing != r_missing)
-        
-        if is_frontal:
-            if one_wrist_occluded:
-                state["occlusion_counter"] += 1
-                SystemEvents.behavior_rejected(
-                    camera_id, stable_id, "concealment",
-                    f"Wrist occluded (L: {l_missing}, R: {r_missing}) | Counter: {state['occlusion_counter']}/{self.duration_frames}"
-                )
-            else:
-                # Reset counter if both are visible or both are missing (not suspicious)
-                if state["occlusion_counter"] > 0:
-                    state["occlusion_counter"] = max(0, state["occlusion_counter"] - 1)
-        else:
-            # Person is in side profile, suppress alerts and reset counter
-            if state["occlusion_counter"] > 0:
-                state["occlusion_counter"] = max(0, state["occlusion_counter"] - 1)
+    def process_fused(
+        self,
+        fused_observations: List[FusedConcealmentObservation],
+        frame_index: int,
+        sensitivity: str,
+        camera_id: str,
+        timestamp: float,
+    ) -> List[BehaviorEvidence]:
+        evidence_list: List[BehaviorEvidence] = []
+
+        concealed_hands = [
+            obs
+            for obs in fused_observations
+            if obs.fused_state == HandObservationState.CONCEALED
+            and obs.fused_confidence >= self.min_fused_confidence
+            and camera_id in obs.supporting_cameras
+        ]
+
+        active_keys = set()
+        for fused in concealed_hands:
+            state_key = (fused.zone_id, fused.subject_slot)
+            active_keys.add(state_key)
+            state = self._get_state(state_key)
+
+            if frame_index < state["cooldown_until"]:
+                continue
+
+            state["occlusion_counter"] += 1
             SystemEvents.behavior_rejected(
-                camera_id, stable_id, "concealment",
-                f"Yaw gate suppression active | Yaw angle: {yaw_angle:.1f}° >= {self.yaw_gate_threshold}°"
+                camera_id,
+                fused.camera_stable_ids.get(camera_id, fused.subject_slot),
+                "concealment",
+                (
+                    f"Fused {fused.hand.value} concealed | "
+                    f"Counter: {state['occlusion_counter']}/{self.duration_frames} | "
+                    f"Support: {fused.supporting_cameras}"
+                ),
             )
 
-        # Trigger check
-        if state["occlusion_counter"] >= self.duration_frames:
-            # Confirm behavior
+            if state["occlusion_counter"] < self.duration_frames:
+                continue
+
             state["occlusion_counter"] = 0
             state["cooldown_until"] = frame_index + self.cooldown_frames
-            
-            # Confidence score dependent on active sensitivity level
-            confidence = 0.85
-            if sensitivity == "high":
-                confidence = 0.90
-            elif sensitivity == "low":
-                confidence = 0.75
-                
-            reason = f"Single wrist hidden, Yaw angle = {yaw_angle:.1f}°, Duration = {self.duration_frames} frames"
-            
+
+            confidence = self._sensitivity_confidence(sensitivity, fused.fused_confidence)
+            stable_id = int(fused.camera_stable_ids.get(camera_id, fused.subject_slot))
+            reason = (
+                f"Multi-camera fused {fused.hand.value} hand concealed | "
+                f"Support: {', '.join(fused.supporting_cameras)} | "
+                f"Duration: {self.duration_frames} frames"
+            )
+
             evidence = BehaviorEvidence(
                 behavior_type="concealment",
                 stable_id=stable_id,
                 confidence=confidence,
                 frame_number=frame_index,
-                timestamp=person.timestamp,
+                timestamp=timestamp,
                 sustained_frames=self.duration_frames,
-                metadata={"missing_wrists": [l_missing, r_missing], "yaw_angle": yaw_angle},
+                metadata={
+                    "fusion_confirmed": True,
+                    "zone_id": fused.zone_id,
+                    "subject_slot": fused.subject_slot,
+                    "hand": fused.hand.value,
+                    "supporting_cameras": list(fused.supporting_cameras),
+                },
                 camera_id=camera_id,
                 supporting_metrics={
-                    "yaw_angle": yaw_angle,
-                    "yaw_ratio": yaw_ratio,
-                    "left_wrist_conf": float(l_wrist_conf),
-                    "right_wrist_conf": float(r_wrist_conf)
+                    "fused_confidence": fused.fused_confidence,
+                    "supporting_cameras": list(fused.supporting_cameras),
+                    "vetoing_cameras": list(fused.vetoing_cameras),
+                    "unknown_cameras": list(fused.unknown_cameras),
                 },
-                reason=reason
+                reason=reason,
             )
-            
             SystemEvents.behavior_detected(camera_id, stable_id, "concealment", reason)
-            return evidence
+            evidence_list.append(evidence)
 
-        return None
+        for state_key, state in list(self.states.items()):
+            if state_key in active_keys:
+                continue
+            if state["occlusion_counter"] > 0:
+                state["occlusion_counter"] = max(
+                    0, state["occlusion_counter"] - self.decay_frames
+                )
+
+        return evidence_list
+
+    def _get_state(self, state_key: tuple[str, int]) -> dict[str, int]:
+        if state_key not in self.states:
+            self.states[state_key] = {"occlusion_counter": 0, "cooldown_until": 0}
+        return self.states[state_key]
+
+    @staticmethod
+    def _sensitivity_confidence(sensitivity: str, fused_confidence: float) -> float:
+        base = max(0.75, min(0.95, fused_confidence))
+        if sensitivity == "high":
+            return min(0.95, base + 0.05)
+        if sensitivity == "low":
+            return max(0.70, base - 0.05)
+        return base
+
+
+_detector: Optional[ConcealmentDetector] = None
+
+
+def get_concealment_detector() -> ConcealmentDetector:
+    global _detector
+    if _detector is None:
+        _detector = ConcealmentDetector()
+    return _detector

@@ -1,0 +1,14 @@
+Feature Name: Offline Pre-recorded Video Analysis & Forensic Export Center
+
+Purpose:
+To provide correctional facility operators and investigators with a dedicated tool for running the CellWatch AI pipeline on pre-recorded CCTV footage. This enables retrospective analysis of incidents without relying on real-time live feeds. It acts as a strict, forensically sound pipeline that ingests a video, runs MoveNet (behavior/pose) and YOLO (contraband) inference, normalizes the data through a Decision Engine, and exports tamper-evident artifacts for academic, legal, or institutional review.
+
+Key Architectural Components:
+1. Offline Inference Manager (`monitor_app/offline_inference.py`): The orchestrator that reads frames as fast as possible, dispatches them to the AI engine, and collects raw evidence. It is strictly stripped of business logic.
+2. Evidence Models (`monitor_app/evidence.py`): Contains canonical dataclasses (e.g. `IncidentRecord`, `BehaviorEvidence`, `TrackedPerson`) and enums (`IncidentType`, `SnapshotResult`) to guarantee type-safety and decouple inference from exporting.
+3. Decision Engine (`monitor_app/decision.py`): The core business logic layer. It takes raw detections, maps them to formal `IncidentRecord`s, assigns strict tracking IDs, determines if a snapshot is required (for Knife, Cellphone, Aggression, Suspicious Concealment), and tracks raw metrics (e.g. pixel velocity) versus normalized confidence.
+4. Export Pipeline (`monitor_app/exporters/`): A heavily decoupled subsystem where a single `session_exporter.py` orchestrates various formatters (Markdown, PDF, CSV, JSON). Exporters perform NO deduction or logic—they strictly serialize the validated `IncidentRecord`s provided by the Decision Engine.
+5. Forensic Artifacts: The system generates a comprehensive folder including `detections.csv`, `incidents.csv`, `timeline.md` (chronological events), `gallery.md` (incident snapshots), a professional `report.pdf`, a global `session_registry.json`, and hardware benchmarking telemetry.
+
+Current Status & Next Steps (Handover Notes):
+The pipeline is functionally generating AI detections (e.g., thousands of movement/person detections, cellphone hits). However, the architectural decoupling between the Decision Engine and Export subsystem requires finalization. The current implementation plan dictates transitioning all snapshot eligibility and track ID mapping strictly to the `DecisionEngine` and replacing raw dictionaries with the `IncidentRecord` dataclass to fix missing snapshots and replay metadata. Unit tests and validation layers are pending.

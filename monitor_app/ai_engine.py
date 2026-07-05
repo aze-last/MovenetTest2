@@ -8,6 +8,7 @@ from datetime import datetime
 from PIL import Image
 
 from monitor_app.evidence import TrackedPerson
+from monitor_app.config import get_config
 
 
 # ==========================================
@@ -65,7 +66,7 @@ class BasicMotionEngine:
         self.trackers = {}
         self.threshold = 3.0 if sensitivity == "medium" else 1.5
 
-    def process_frame(self, frame, camera_id="0"):
+    def process_frame(self, frame, camera_id="0", frame_uuid=None):
         if camera_id not in self.trackers:
             self.trackers[camera_id] = None
 
@@ -239,18 +240,33 @@ class MotionOptimizedEngine:
             print("MoveNet skipped: TensorFlow unavailable.")
 
         if self.enable_yolo:
-            # 1. Load Custom Model (best.pt)
-            print("Combined model (knife+cellphone) loaded from best.pt")
-            try:
-                model_path = os.path.join(os.path.dirname(__file__), "models", "best.pt")
-                if os.path.exists(model_path):
-                    self.yolo_custom = YOLO(model_path)
-                else:
-                    print(f"Custom model not found at {model_path}")
-            except Exception as e:
-                print(f"Custom YOLO load failed: {e}")
+            from monitor_app.config import get_config
 
-            print("Combined model (knife + cellphone) loaded from best.pt")
+            model_dir = os.path.join(os.path.dirname(__file__), "models")
+            primary_name = get_config("yolo", "model_path", "best.engine")
+            fallback_name = get_config("yolo", "model_path_fallback", "best.pt")
+
+            self.yolo_custom = None
+            self.active_model_name = None
+            active_model_name = None
+
+            for candidate in [primary_name, fallback_name]:
+                candidate_path = os.path.join(model_dir, candidate)
+                if not os.path.exists(candidate_path):
+                    print(f"[YOLO] {candidate} not found at {candidate_path}, trying next option")
+                    continue
+                try:
+                    self.yolo_custom = YOLO(candidate_path)
+                    active_model_name = candidate
+                    print(f"[YOLO] Loaded {candidate} successfully")
+                    break
+                except Exception as e:
+                    print(f"[YOLO] Failed to load {candidate}: {e}")
+
+            if self.yolo_custom is None:
+                print("[YOLO] CRITICAL: No usable model loaded (tried engine + pt fallback). Contraband detection is DISABLED.")
+            else:
+                self.active_model_name = active_model_name  # expose for UI/logs so it's visible which one is running
 
         if self.movenet is None:
             print("MoveNet not loaded; behavior detection disabled.")
@@ -277,7 +293,7 @@ class MotionOptimizedEngine:
         self.last_gray[camera_id] = gray
         return score > adaptive_threshold, score
 
-    def process_frame(self, frame, camera_id="0"):
+    def process_frame(self, frame, camera_id="0", frame_uuid=None):
         """Main AI pipeline called by the UI."""
         with self.lock:
             self.stats["total"] += 1
@@ -291,7 +307,14 @@ class MotionOptimizedEngine:
             "processing_mode": "Power Saving (No Motion)"
         }
 
-        if not is_moving:
+        gate_cfg = get_config("motion_gate")
+        movenet_gated = gate_cfg.get("motion_gate_movenet_enabled", True)
+        yolo_gated = gate_cfg.get("motion_gate_yolo_enabled", True)
+
+        run_movenet = is_moving or not movenet_gated
+        run_yolo = is_moving or not yolo_gated
+
+        if not run_movenet and not run_yolo:
             with self.lock:
                 self.stats["skipped"] += 1
             # Return original frame to save memory
@@ -304,28 +327,80 @@ class MotionOptimizedEngine:
             return res
         self.last_run[camera_id] = now
 
+        # Get active telemetry context
+        ctx = None
+        if frame_uuid:
+            from monitor_app.telemetry import get_telemetry_engine
+            ctx = get_telemetry_engine().get_context(frame_uuid)
+
         # --- FULL AI MODE ---
         res["frame"] = frame.copy()
-        res["processing_mode"] = "AI ACTIVE (RTX GPU Enabled)"
+        mode_str = "AI ACTIVE (RTX GPU Enabled)"
+        if not is_moving:
+            mode_str = "AI ACTIVE (Ungated Override)"
+        res["processing_mode"] = mode_str
+        
         with self.lock:
             self.stats["ai_runs"] += 1
-        CapstoneDebug.log(camera_id, f"Significant motion detected ({score} px). Running AI engines...")
+            
+        if is_moving:
+            CapstoneDebug.log(camera_id, f"Significant motion detected ({score} px). Running AI engines...")
+        else:
+            CapstoneDebug.log(camera_id, f"No motion, but ungated processing active.")
 
         # 1. Behavior Analysis (MoveNet)
-        if self.movenet:
+        if self.movenet and run_movenet:
+            if ctx:
+                ctx.mark("movenet_start")
             with self.tf_inference_lock:
                 self._run_movenet_logic(res, camera_id)
+            if ctx:
+                ctx.mark("movenet_end")
 
         # 2. Contraband Analysis (Dual YOLO)
-        if self.enable_yolo and self.yolo_custom:
+        if self.enable_yolo and self.yolo_custom and run_yolo:
+            if ctx:
+                ctx.mark("yolo_start")
             with self.yolo_inference_lock:
                 self._run_yolo_logic(res, camera_id)
+            if ctx:
+                ctx.mark("yolo_end")
 
         # Draw Global HUD
         cv2.putText(res["frame"], res["processing_mode"], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         return res
 
 
+
+    @staticmethod
+    def compute_bbox_from_keypoints(kps, frame_shape):
+        """
+        Computes the bounding box of a person based on their keypoints.
+        kps: (17, 3) where columns are y, x, conf (normalized 0-1)
+        frame_shape: (height, width, channels)
+        Returns: (x1, y1, x2, y2)
+        """
+        h, w = frame_shape[:2]
+        
+        # Filter keypoints by confidence (e.g. > 0.1)
+        valid_kps = [kp for kp in kps if kp[2] > 0.1]
+        
+        if not valid_kps:
+            return None
+
+        ys = [kp[0] * h for kp in valid_kps]
+        xs = [kp[1] * w for kp in valid_kps]
+        
+        # Add a bit of padding
+        padding_y = h * 0.05
+        padding_x = w * 0.05
+        
+        x1 = max(0, int(min(xs) - padding_x))
+        y1 = max(0, int(min(ys) - padding_y))
+        x2 = min(w, int(max(xs) + padding_x))
+        y2 = min(h, int(max(ys) + padding_y))
+        
+        return (x1, y1, x2, y2)
 
     def _run_movenet_logic(self, res, cam_id):
         img_input = cv2.cvtColor(res["frame"], cv2.COLOR_BGR2RGB)
@@ -348,7 +423,6 @@ class MotionOptimizedEngine:
                     res["num_people"] += 1
                     self.draw_skeleton(res["frame"], person, i)
                     label, score = self.classify_behavior(person, i, cam_id, res["frame"].shape)
-                    self.label_person(res["frame"], person, i, label, score)
 
                     detected_people.append({
                         "p_id": i,
@@ -416,7 +490,24 @@ class MotionOptimizedEngine:
                     )
                     self.yolo_trackers[cam_id] = BYTETracker(args)
 
-                results = self.yolo_custom(res["frame"], verbose=False, imgsz=640, device=device)
+                from monitor_app.config import get_config
+                inference_imgsz = get_config("yolo", "inference_imgsz", 960)
+                
+                try:
+                    results = self.yolo_custom(res["frame"], verbose=False, imgsz=inference_imgsz, device=device)
+                except Exception as e:
+                    print(f"[YOLO] CRITICAL: inference failed on active model '{getattr(self, 'active_model_name', 'unknown')}': {e}")
+                    print("[YOLO] Attempting emergency fallback to best.pt for this session...")
+                    import os
+                    model_dir = os.path.join(os.path.dirname(__file__), "models")
+                    fallback_path = os.path.join(model_dir, get_config("yolo", "model_path_fallback", "best.pt"))
+                    if os.path.exists(fallback_path):
+                        self.yolo_custom = YOLO(fallback_path)
+                        self.active_model_name = "best.pt (emergency fallback)"
+                        results = self.yolo_custom(res["frame"], verbose=False, imgsz=inference_imgsz, device=device)
+                    else:
+                        results = []
+
                 CLASS_NAMES = {0: "knife", 1: "cellphone"}
                 CONF_THRESHOLDS = {
                     0: getattr(self, "yolo_knife_conf", 0.30),
@@ -425,15 +516,19 @@ class MotionOptimizedEngine:
                 fallback_thr = getattr(self, "yolo_fallback_conf", 0.50)
 
                 for r in results:
+                    if r.boxes is not None and len(r.boxes) > 0:
+                        print(f"[YOLO raw] confs: {r.boxes.conf.tolist()}, classes: {r.boxes.cls.tolist()}")
+                    
                     # Update ByteTrack with YOLO Boxes
                     tracks = self.yolo_trackers[cam_id].update(r.boxes.cpu(), res["frame"])
                     if len(tracks) > 0:
                         print(f"[BYTETrack Cam {cam_id}] Updated with {len(tracks)} active tracks.")
                     
-                    # Update active track time in central inference manager for hysteresis gating
                     if len(tracks) > 0:
                         from monitor_app.central_inference import get_inference_manager
-                        get_inference_manager().update_active_track_time(cam_id)
+                        mgr = get_inference_manager()
+                        if mgr:
+                            mgr.update_active_track_time(cam_id)
 
                     for track in tracks:
                         x1, y1, x2, y2, track_id, conf, cls_id, idx = track

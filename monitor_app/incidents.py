@@ -88,7 +88,8 @@ class IncidentsScreen(ttk.Frame):
     def __init__(self, parent, current_user="Unknown"):
         super().__init__(parent)
         self.pack(fill="both", expand=True)
-        self.db_path = "incidents.db"
+        from monitor_app.utils import data_path
+        self.db_path = data_path("incidents.db")
         self.current_user = current_user
         self.summary_labels = {}
 
@@ -181,6 +182,24 @@ class IncidentsScreen(ttk.Frame):
             )
             value.pack(anchor="w", padx=12, pady=(0, 10))
             self.summary_labels[label] = value
+
+        actions = ctk.CTkFrame(header, fg_color="transparent")
+        actions.grid(row=0, column=2, sticky="e", padx=20, pady=14)
+
+        btn_offline = ctk.CTkButton(
+            actions,
+            text="Offline Analysis Center",
+            command=self._open_offline_analysis,
+            fg_color=PALETTE["accent"],
+            text_color="#ffffff",
+            font=("Segoe UI Semibold", 12),
+        )
+        btn_offline.pack(side="right")
+
+    def _open_offline_analysis(self):
+        from monitor_app.offline_ui import OfflineAnalysisCenterDialog
+        dlg = OfflineAnalysisCenterDialog(self)
+        dlg.grab_set()
 
     def _build_tabs(self):
         self.tabview = ctk.CTkTabview(

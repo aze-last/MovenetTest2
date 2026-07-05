@@ -1,33 +1,64 @@
-config_version: 1
-
-# Engineering and Infrastructure Settings
-# DO NOT place operator tuning (e.g. confidence thresholds) here.
-
-logging:
-  level: INFO # DEBUG, INFO, WARNING, ERROR
-  file_rotation: daily
-  console: true
-  file: true
-  keep_days: 30
-
 alert_cooldowns:
+  cellphone: 30.0
   default: 25.0
   fight: 30.0
   knife: 60.0
-  cellphone: 30.0
-
-motion_gate:
-  enable_delay: 0.5
-  disable_delay: 3.0
-  minimum_active_duration: 1.0
-
 camera_reconnect:
+  factor: 2.0
   initial_backoff: 1.0
   max_backoff: 60.0
-  factor: 2.0
-
-incident_merging:
-  merge_window: 10.0 # Seconds within which to merge new evidence into the same incident
-
+concealment:
+  behavior:
+    cooldown_frames: 60
+    decay_frames: 1
+    duration_frames: 27
+  enabled: true
+  fusion:
+    association_max_hip_distance_norm: 0.15
+    fusion_stale_ms: 500
+    min_frontal_quality: 0.6
+    min_frontal_supporting_cameras: 1
+    min_fused_confidence: 0.75
+    min_supporting_cameras: 2
+    side_view_never_confirms: true
+    single_camera_insufficient: true
+    unknown_is_neutral: true
+    veto_visible_threshold: 0.7
+  per_camera:
+    min_pose_confidence: 0.25
+    wrist_missing_threshold: 0.2
+    wrist_visible_threshold: 0.35
+    yaw_gate_threshold: 30.0
+  zones:
+    default:
+      cameras:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      max_occupancy_for_auto_merge: 2
+config_version: 1
+dataset_recorder:
+  camera_scan_max: 20
+  image_interval: 30
+  output_dir: DatasetRecordings
 health_monitor:
-  check_interval: 10.0 # Watchdog loop interval in seconds
+  check_interval: 10.0
+incident_merging:
+  merge_window: 10.0
+logging:
+  console: true
+  file: true
+  file_rotation: daily
+  keep_days: 30
+  level: INFO
+motion_gate:
+  disable_delay: 3.0
+  enable_delay: 0.5
+  minimum_active_duration: 1.0
+  motion_gate_movenet_enabled: true
+  motion_gate_yolo_enabled: true
+yolo:
+  inference_imgsz: 960
+  model_path: best.engine
+  model_path_fallback: best.pt

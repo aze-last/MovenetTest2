@@ -126,6 +126,13 @@ class CentralInferenceManager:
                 packet = task.packet
                 start_time = time.perf_counter()
                 
+                ctx = None
+                if packet.frame_uuid:
+                    from monitor_app.telemetry import get_telemetry_engine
+                    ctx = get_telemetry_engine().get_context(packet.frame_uuid)
+                    if ctx:
+                        ctx.mark("queue_exit")
+                
                 # Check for GPU recovery retry
                 if self.inference_paused:
                     now = time.time()
@@ -148,7 +155,7 @@ class CentralInferenceManager:
                         if packet.camera_id == "99":
                             res = packet.to_dict()
                         else:
-                            res = self.engine.process_frame(packet.frame, packet.camera_id)
+                            res = self.engine.process_frame(packet.frame, packet.camera_id, packet.frame_uuid)
                         
                         # Map outcome back to EvidencePacket
                         packet.frame = res.get("frame", packet.frame)
@@ -169,7 +176,81 @@ class CentralInferenceManager:
                         self.frame_indices[cam_id] = self.frame_indices.get(cam_id, 0) + 1
                         frame_index = self.frame_indices[cam_id]
                         
+                        if ctx:
+                            ctx.mark("behavior_start")
                         get_behavior_engine().analyze_packet(packet, frame_index, profile)
+                        if ctx:
+                            ctx.mark("behavior_end")
+
+                        # --- CONCEALMENT: per-camera observations -> fusion -> behavior ---
+                        from monitor_app.config import get_concealment_config
+                        if get_concealment_config("enabled", True):
+                            from monitor_app.hand_observation import get_hand_observation_classifier
+                            from monitor_app.fusion import get_camera_fusion
+                            from monitor_app.concealment_fusion import get_concealment_fusion_engine
+                            from monitor_app.behaviors.concealment_detector import get_concealment_detector
+
+                            if ctx:
+                                ctx.mark("fusion_start")
+
+                            classifier = get_hand_observation_classifier()
+                            observations = []
+                            for person in packet.tracked_persons:
+                                observations.extend(
+                                    classifier.classify_person(person, frame_index)
+                                )
+
+                            camera_fusion = get_camera_fusion()
+                            camera_fusion.update_hand_observations(packet.camera_id, observations)
+                            fused = get_concealment_fusion_engine().fuse_all_zones(
+                                camera_fusion.get_hand_observations_snapshot()
+                            )
+                            packet.fused_concealment = fused
+
+                            concealment_evidence = get_concealment_detector().process_fused(
+                                fused,
+                                frame_index,
+                                profile,
+                                packet.camera_id,
+                                packet.timestamp,
+                            )
+                            packet.behavior_evidence.extend(concealment_evidence)
+
+                            if ctx:
+                                ctx.mark("fusion_end")
+
+                        # --- ALERT SYNC & BBOX DRAWING ---
+                        for ev in packet.behavior_evidence:
+                            alert_str = f"Person {ev.stable_id}: {ev.behavior_type.upper()}"
+                            if alert_str not in packet.alerts:
+                                packet.alerts.append(alert_str)
+                        if packet.behavior_evidence:
+                            packet.alert_triggered = True
+
+                        import cv2
+                        from monitor_app.ai_engine import MotionOptimizedEngine
+                        for p in packet.tracked_persons:
+                            if p.keypoints is not None:
+                                bbox = MotionOptimizedEngine.compute_bbox_from_keypoints(p.keypoints, packet.frame.shape)
+                                if bbox:
+                                    p.bbox = bbox
+                                    
+                                    # Color logic: check legacy detections via raw_person_id OR new evidence via stable_id
+                                    is_alert = False
+                                    for b_det in packet.detections.get("behavior", []):
+                                        if b_det.get("person_index") == p.raw_person_id and b_det.get("label") in ("Aggressive / Fighting", "Fast Movement"):
+                                            is_alert = True
+                                            break
+                                    if not is_alert:
+                                        for ev in packet.behavior_evidence:
+                                            if ev.stable_id == p.stable_id:
+                                                is_alert = True
+                                                break
+
+                                    color = (0, 0, 255) if is_alert else (0, 255, 0)
+                                    x1, y1, x2, y2 = bbox
+                                    cv2.rectangle(packet.frame, (x1, y1), (x2, y2), color, 2)
+                                    cv2.putText(packet.frame, f"ID {p.stable_id}", (x1, max(0, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
                         # --- PHASE 5: FUSION, DECISION & ALERT ROUTING ---
                         try:
@@ -177,8 +258,13 @@ class CentralInferenceManager:
                             from monitor_app.decision import get_decision_engine
                             from monitor_app.events import get_event_bus
 
+                            if ctx:
+                                ctx.mark("fusion_start")
                             # 1. Update Fused Telemetry State
                             get_camera_fusion().update(packet)
+                            if ctx:
+                                ctx.mark("fusion_end")
+                                ctx.mark("decision_start")
 
                             # 2. Evaluate Decision
                             decision_engine = get_decision_engine()
@@ -197,6 +283,8 @@ class CentralInferenceManager:
                                     frame=packet.frame,
                                     ai_results=res
                                 )
+                            if ctx:
+                                ctx.mark("decision_end")
                         except Exception as route_ex:
                             logger.error(f"Phase 5 Routing Error: {route_ex}")
 
@@ -219,6 +307,22 @@ class CentralInferenceManager:
                 from monitor_app.monitor_logging import get_performance_monitor
                 get_performance_monitor().track_frame(latency)
 
+                # Telemetry end-of-pipeline retirement and dispatch
+                if packet.frame_uuid and ctx:
+                    from monitor_app.telemetry import get_telemetry_engine
+                    # Retire from registry
+                    get_telemetry_engine().retire_context(packet.frame_uuid)
+                    
+                    # Add database/recorder placeholders
+                    ctx.mark("recorder_write_start")
+                    ctx.mark("recorder_write_end")
+                    ctx.mark("database_write_start")
+                    ctx.mark("database_write_end")
+                    
+                    # Publish completed telemetry event
+                    from monitor_app.events import get_event_bus, TELEM_PIPELINE_COMPLETE
+                    get_event_bus().publish(TELEM_PIPELINE_COMPLETE, TELEM_PIPELINE_COMPLETE, ctx.to_dict())
+
                 task.result = packet
                 task.event.set()
                 self.task_queue.task_done()
@@ -234,6 +338,13 @@ class CentralInferenceManager:
         """
         task = InferenceTask(packet)
         
+        # Mark queue enter timestamp
+        if packet.frame_uuid:
+            from monitor_app.telemetry import get_telemetry_engine
+            ctx = get_telemetry_engine().get_context(packet.frame_uuid)
+            if ctx:
+                ctx.mark("queue_enter")
+
         # Frame dropping policy: If queue is full, drop oldest task
         while True:
             try:
@@ -250,6 +361,17 @@ class CentralInferenceManager:
                     get_performance_monitor().track_dropped_frame()
                     SystemEvents.queue_overflow(dropped_task.packet.camera_id, self.task_queue.qsize())
                     
+                    # Retire dropped context and publish event loss telemetry
+                    if dropped_task.packet.frame_uuid:
+                        from monitor_app.telemetry import get_telemetry_engine
+                        from monitor_app.events import get_event_bus, TELEM_FRAME_DROPPED
+                        get_telemetry_engine().retire_context(dropped_task.packet.frame_uuid)
+                        get_event_bus().publish(TELEM_FRAME_DROPPED, TELEM_FRAME_DROPPED, {
+                            "camera_id": dropped_task.packet.camera_id,
+                            "frame_uuid": dropped_task.packet.frame_uuid,
+                            "reason": "queue_backpressure"
+                        })
+
                     dropped_task.event.set()
                     self.task_queue.task_done()
                 except queue.Empty:
@@ -261,6 +383,11 @@ class CentralInferenceManager:
             # Timeout recovery
             task.result = packet
             packet.processing_mode = "Inference Timeout"
+            
+            # Retire context on timeout
+            if packet.frame_uuid:
+                from monitor_app.telemetry import get_telemetry_engine
+                get_telemetry_engine().retire_context(packet.frame_uuid)
             
             from monitor_app.monitor_logging import SystemEvents
             SystemEvents.inference_timeout(packet.camera_id, 5.0)

@@ -25,8 +25,9 @@ class IncidentRecorder:
 
     def __init__(self, camera_id, recordings_dir="recordings", db_path="incidents.db", on_incident_callback=None):
         self.camera_id = str(camera_id).zfill(2)
-        self.recordings_dir = recordings_dir
-        self.db_path = db_path
+        from monitor_app.utils import data_path
+        self.recordings_dir = data_path(recordings_dir) if not os.path.isabs(recordings_dir) else recordings_dir
+        self.db_path = data_path(db_path) if not os.path.isabs(db_path) else db_path
         self.on_incident_callback = on_incident_callback
         self.state = self.IDLE
         
@@ -205,6 +206,19 @@ class IncidentRecorder:
         
         self.state = self.RECORDING
         logger.info(f"Recording STARTED | Video: {filename}", camera_id=self.camera_id, incident_id=self.current_event_id)
+        
+        # Publish telemetry event
+        from monitor_app.events import get_event_bus, TELEM_INCIDENT_STARTED
+        get_event_bus().publish(
+            TELEM_INCIDENT_STARTED, 
+            TELEM_INCIDENT_STARTED, 
+            {
+                "camera_id": self.camera_id, 
+                "incident_id": self.current_event_id, 
+                "event_type": self.current_event_type, 
+                "timestamp": self.current_timestamp_start
+            }
+        )
 
     def _stop_recording(self):
         if self.video_writer:
@@ -240,10 +254,39 @@ class IncidentRecorder:
             conn.commit()
             conn.close()
             
+            # Publish telemetry event
+            from monitor_app.events import get_event_bus, TELEM_DB_WRITE_COMPLETE
+            get_event_bus().publish(
+                TELEM_DB_WRITE_COMPLETE,
+                TELEM_DB_WRITE_COMPLETE,
+                {
+                    "camera_id": self.camera_id,
+                    "incident_id": self.current_event_id,
+                    "db_path": self.db_path,
+                    "status": "SUCCESS"
+                }
+            )
+            
             if self.on_incident_callback:
                 self.on_incident_callback(self.current_event_id, self.current_event_type, self.current_video_path)
         except Exception as e:
             logger.error(f"Metadata Save Error: {e}", camera_id=self.camera_id, incident_id=self.current_event_id)
+            # Publish telemetry event failure
+            try:
+                from monitor_app.events import get_event_bus, TELEM_DB_WRITE_COMPLETE
+                get_event_bus().publish(
+                    TELEM_DB_WRITE_COMPLETE,
+                    TELEM_DB_WRITE_COMPLETE,
+                    {
+                        "camera_id": self.camera_id,
+                        "incident_id": self.current_event_id,
+                        "db_path": self.db_path,
+                        "status": "FAILED",
+                        "error": str(e)
+                    }
+                )
+            except Exception:
+                pass
 
     def get_status_info(self):
         if self.state == self.RECORDING:

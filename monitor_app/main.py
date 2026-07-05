@@ -3,50 +3,51 @@ from tkinter import ttk
 import sys
 import os
 
-import customtkinter as ctk
-
-os.environ.pop("TCL_LIBRARY", None)
-os.environ.pop("TK_LIBRARY", None)
-
 # Add project root to path to ensure imports work correctly
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# --- OPTIONAL FIX FOR CUSTOM TKINTER INSTALLATIONS ---
-try:
-    # We look for Tcl/Tk relative to the executable
-    base_python = os.path.dirname(sys.executable)
-    
-    # 1. Try to find TCL
-    tcl_path = None
-    possible_tcl = [
-        os.path.join(base_python, "tcl", "tcl8.6"),
-        os.path.join(base_python, "Lib", "tcl8.6"),
-    ]
-    for p in possible_tcl:
-        if os.path.exists(os.path.join(p, "init.tcl")):
-            tcl_path = p
-            break
-            
-    # 2. Try to find TK
-    tk_path = None
-    possible_tk = [
-        os.path.join(base_python, "tcl", "tk8.6"),
-        os.path.join(base_python, "Lib", "tk8.6"),
-    ]
-    for p in possible_tk:
-        if os.path.exists(os.path.join(p, "tk.tcl")):
-            tk_path = p
-            break
+import customtkinter as ctk
 
-    if tcl_path:
-        os.environ["TCL_LIBRARY"] = tcl_path
-        # print(f"Applied TCL_LIBRARY: {tcl_path}")
-    if tk_path:
-        os.environ["TK_LIBRARY"] = tk_path
-        # print(f"Applied TK_LIBRARY: {tk_path}")
+if not getattr(sys, 'frozen', False):
+    os.environ.pop("TCL_LIBRARY", None)
+    os.environ.pop("TK_LIBRARY", None)
 
-except Exception as e:
-    print(f"Warning: Could not auto-fix Tkinter paths: {e}")
+    # --- OPTIONAL FIX FOR CUSTOM TKINTER INSTALLATIONS ---
+    try:
+        # We look for Tcl/Tk relative to the executable
+        base_python = os.path.dirname(sys.executable)
+        
+        # 1. Try to find TCL
+        tcl_path = None
+        possible_tcl = [
+            os.path.join(base_python, "tcl", "tcl8.6"),
+            os.path.join(base_python, "Lib", "tcl8.6"),
+        ]
+        for p in possible_tcl:
+            if os.path.exists(os.path.join(p, "init.tcl")):
+                tcl_path = p
+                break
+                
+        # 2. Try to find TK
+        tk_path = None
+        possible_tk = [
+            os.path.join(base_python, "tcl", "tk8.6"),
+            os.path.join(base_python, "Lib", "tk8.6"),
+        ]
+        for p in possible_tk:
+            if os.path.exists(os.path.join(p, "tk.tcl")):
+                tk_path = p
+                break
+
+        if tcl_path:
+            os.environ["TCL_LIBRARY"] = tcl_path
+            # print(f"Applied TCL_LIBRARY: {tcl_path}")
+        if tk_path:
+            os.environ["TK_LIBRARY"] = tk_path
+            # print(f"Applied TK_LIBRARY: {tk_path}")
+
+    except Exception as e:
+        print(f"Warning: Could not auto-fix Tkinter paths: {e}")
 # ------------------------------------------------------
 
 from monitor_app import utils, auth, camera_view, incidents, dashboard, settings, reports
@@ -75,6 +76,10 @@ class CellWatchApp(ctk.CTk):
         from monitor_app.health import get_health_monitor
         get_health_monitor().start()
 
+        # Initialize Alert Manager to subscribe to Decision events
+        from monitor_app.alert_manager import get_alert_manager
+        get_alert_manager()
+
         self.title(self.app_profile["system_name"])
         self.geometry(utils.WINDOW_SIZE)
         self.configure(bg=self.NAV_PALETTE["bar"])
@@ -82,6 +87,13 @@ class CellWatchApp(ctk.CTk):
         
         # Apply theme
         self.style = utils.apply_dark_theme(self)
+        
+        # Start Telemetry Engine
+        from monitor_app.telemetry import get_telemetry_engine
+        get_telemetry_engine().start()
+        
+        # Start periodic telemetry event ticks
+        self._schedule_telemetry_ticks()
         
         # Placeholder for current user
         self.current_user = None
@@ -193,6 +205,25 @@ class CellWatchApp(ctk.CTk):
             btn.pack(side="left", padx=(0, 10))
             self.nav_buttons[screen_name] = btn
 
+        # ── Tools Dropdown ──
+        self._tools_menu_open = False
+        self._tools_popup = None
+
+        tools_btn = ctk.CTkButton(
+            btn_frame,
+            text="Tools ▾",
+            width=96,
+            height=40,
+            corner_radius=12,
+            fg_color=self.NAV_PALETTE["button"],
+            hover_color=self.NAV_PALETTE["button_hover"],
+            text_color=self.NAV_PALETTE["text"],
+            font=("Segoe UI Semibold", 12),
+            command=self._toggle_tools_menu,
+        )
+        tools_btn.pack(side="left", padx=(0, 10))
+        self._tools_btn = tools_btn
+
         logout_btn = ctk.CTkButton(
             btn_frame,
             text="Logout",
@@ -299,10 +330,116 @@ class CellWatchApp(ctk.CTk):
         self.current_user = None
         self.show_login()
 
+    # ── Tools Dropdown ──────────────────────────────────────────────────────
+    def _toggle_tools_menu(self):
+        if self._tools_popup and self._tools_popup.winfo_exists():
+            self._tools_popup.destroy()
+            self._tools_popup = None
+            return
+
+        # Use a borderless Toplevel so it floats above all widgets
+        popup = ctk.CTkToplevel(self)
+        popup.overrideredirect(True)
+        popup.configure(fg_color="#15202c")
+        popup.attributes("-topmost", True)
+
+        # Position below the tools button
+        btn = self._tools_btn
+        x = btn.winfo_rootx()
+        y = btn.winfo_rooty() + btn.winfo_height() + 4
+
+        popup.geometry(f"+{x}+{y}")
+        self._tools_popup = popup
+
+        container = ctk.CTkFrame(popup, fg_color="#15202c", corner_radius=12,
+                                  border_width=1, border_color="#2a3d52")
+        container.pack(fill="both", expand=True, padx=1, pady=1)
+
+        tools = [
+            ("📊  Benchmark Center", self._launch_benchmark),
+            ("🔍  Offline Analysis Center", self._launch_offline_analysis),
+            ("🎬  Dataset Recorder", self._launch_dataset_recorder),
+        ]
+        for label, cmd in tools:
+            ctk.CTkButton(
+                container, text=label, anchor="w",
+                font=("Segoe UI Semibold", 12),
+                fg_color="transparent", hover_color="#1e3048",
+                text_color="#f3f7fb", height=36, width=220, corner_radius=8,
+                command=lambda c=cmd: self._run_tool(c),
+            ).pack(fill="x", padx=6, pady=2)
+
+        # Close when focus leaves the popup
+        popup.bind("<FocusOut>", self._close_tools_menu_on_focus)
+        popup.after(100, popup.focus_set)
+
+    def _close_tools_menu_on_focus(self, event):
+        if self._tools_popup and self._tools_popup.winfo_exists():
+            # Small delay to allow button clicks to register first
+            self._tools_popup.after(150, self._maybe_close_tools)
+
+    def _maybe_close_tools(self):
+        if self._tools_popup and self._tools_popup.winfo_exists():
+            try:
+                focused = self._tools_popup.focus_get()
+                if focused is None or not str(focused).startswith(str(self._tools_popup)):
+                    self._tools_popup.destroy()
+                    self._tools_popup = None
+            except Exception:
+                self._tools_popup.destroy()
+                self._tools_popup = None
+
+
+    def _run_tool(self, launcher):
+        if self._tools_popup and self._tools_popup.winfo_exists():
+            self._tools_popup.destroy()
+            self._tools_popup = None
+        launcher()
+
+    def _launch_dataset_recorder(self):
+        from monitor_app.dataset_recorder import DatasetRecorderDialog
+        DatasetRecorderDialog(self)
+
+    def _launch_offline_analysis(self):
+        try:
+            from monitor_app.offline_ui import OfflineAnalysisCenterDialog
+            OfflineAnalysisCenterDialog(self)
+        except Exception as e:
+            print(f"Could not launch Offline Analysis: {e}")
+
+    def _launch_benchmark(self):
+        try:
+            from monitor_app.benchmark.benchmark_ui import BenchmarkDialog
+            BenchmarkDialog(self)
+        except Exception as e:
+            print(f"Could not launch Benchmark: {e}")
+
+    def _schedule_telemetry_ticks(self):
+        """Periodically emits telemetry ticks on the event bus while the app is running."""
+        try:
+            from monitor_app.events import get_event_bus, TELEM_SYSTEM_TICK, TELEM_QUEUE_TICK
+            from monitor_app.central_inference import get_inference_manager
+            
+            bus = get_event_bus()
+            bus.publish(TELEM_SYSTEM_TICK, TELEM_SYSTEM_TICK, {})
+            bus.publish(TELEM_QUEUE_TICK, TELEM_QUEUE_TICK, {
+                "queue_size": get_inference_manager().task_queue.qsize()
+            })
+        except Exception:
+            pass
+            
+        # Schedule next tick in 1000ms
+        self.after(1000, self._schedule_telemetry_ticks)
+
     def destroy(self):
         try:
             from monitor_app.health import get_health_monitor
             get_health_monitor().stop()
+        except:
+            pass
+        try:
+            from monitor_app.telemetry import get_telemetry_engine
+            get_telemetry_engine().stop()
         except:
             pass
         super().destroy()

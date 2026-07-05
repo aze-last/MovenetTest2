@@ -7,16 +7,19 @@ import sqlite3
 from datetime import datetime
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "app_state.db")
-ASSETS_DIR = os.path.join(BASE_DIR, "assets")
-CUSTOM_ASSETS_DIR = os.path.join(ASSETS_DIR, "custom")
-PROFILE_PHOTOS_DIR = os.path.join(ASSETS_DIR, "profiles")
+from monitor_app.utils import resource_path, data_path
+
+DB_PATH = data_path("app_state.db")
+# Bundled assets (read-only)
+ASSETS_DIR = resource_path("assets")
+# Custom user data (read-write)
+CUSTOM_ASSETS_DIR = data_path(os.path.join("assets", "custom"))
+PROFILE_PHOTOS_DIR = data_path(os.path.join("assets", "profiles"))
 
 DEFAULT_PROFILE = {
     "system_name": "CellWatch AI",
     "company_name": "Institutional Monitoring Platform",
-    "logo_path": "assets/logo.png",
+    "logo_path": "monitor_app/assets/logo.png",
 }
 
 DEFAULT_CUSTOM_SETTINGS = {
@@ -235,7 +238,14 @@ def resolve_asset_path(relative_path):
         return None
     if os.path.isabs(relative_path):
         return relative_path
-    return os.path.join(BASE_DIR, relative_path)
+    
+    # Check if this is a custom read-write asset
+    if relative_path.startswith("assets/custom/") or relative_path.startswith("assets/profiles/"):
+        # Fix slashes for windows if necessary
+        return data_path(os.path.normpath(relative_path))
+        
+    # Fallback to bundled read-only asset
+    return resource_path(os.path.normpath(relative_path))
 
 
 def get_app_profile():

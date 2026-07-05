@@ -1,21 +1,25 @@
 import threading
-from typing import Dict
-from monitor_app.evidence import EvidencePacket
+import time
+from typing import Dict, List, Tuple
+
+from monitor_app.evidence import EvidencePacket, HandObservation
 from monitor_app.logger import get_module_logger
 
 logger = get_module_logger("Camera Fusion")
 
+
 class CameraFusion:
     """
     Synchronized telemetry aggregator.
-    Collects and maintains the latest EvidencePackets from all cameras.
+    Collects latest EvidencePackets and per-camera hand observations.
     Does NOT perform ReID or cross-camera tracking.
     """
+
     def __init__(self):
         self.lock = threading.Lock()
         self.latest_packets: Dict[str, EvidencePacket] = {}
-        
-        # Register with Health Monitor
+        self.hand_observations: Dict[str, Tuple[float, List[HandObservation]]] = {}
+
         from monitor_app.health import get_health_monitor
         get_health_monitor().register_component("Camera Fusion", self.get_state)
 
@@ -26,7 +30,19 @@ class CameraFusion:
     def update(self, packet: EvidencePacket):
         with self.lock:
             self.latest_packets[str(packet.camera_id)] = packet
-            logger.debug(f"Aggregated telemetry packet", camera_id=packet.camera_id)
+            logger.debug("Aggregated telemetry packet", camera_id=packet.camera_id)
+
+    def update_hand_observations(
+        self, camera_id: str, observations: List[HandObservation]
+    ):
+        with self.lock:
+            self.hand_observations[str(camera_id)] = (time.time(), list(observations))
+
+    def get_hand_observations_snapshot(
+        self,
+    ) -> Dict[str, Tuple[float, List[HandObservation]]]:
+        with self.lock:
+            return dict(self.hand_observations)
 
     def get_latest_packet(self, camera_id: str) -> EvidencePacket:
         with self.lock:
@@ -36,8 +52,9 @@ class CameraFusion:
         with self.lock:
             return dict(self.latest_packets)
 
-# Global Camera Fusion Singleton
+
 _global_fusion = CameraFusion()
+
 
 def get_camera_fusion() -> CameraFusion:
     return _global_fusion

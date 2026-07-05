@@ -431,15 +431,15 @@ class SettingsScreen(ctk.CTkFrame):
 
         # Define configurations
         self.PARAMS_CFG = {
-            "conf_thr": ("Pose Confidence", 0.05, 0.95, 90, "Minimum average MoveNet confidence required before a detected pose is considered valid for movement analysis.", False),
+            "conf_thr": ("Pose Confidence", 0.05, 0.95, 90, "Minimum average MoveNet confidence required before a detected pose is considered valid for movement analysis. Increasing this reduces false alarms but may cause actual movements to be ignored. Decreasing this detects more but increases false positives.", False),
             "active_thr": ("Fast Movement (px/sec)", 10.0, 500.0, 98, "Movement speed threshold used to classify activity as fast movement. Measured in pixels per second.", False),
             "agg_thr": ("Aggressive Movement (px/sec)", 50.0, 1000.0, 95, "Movement speed threshold used to classify behavior as aggressive or potentially violent. Measured in pixels per second.", False),
             "alert_frames": ("Alert Frame Count", 1, 15, 14, "Number of consecutive frames that must satisfy detection conditions before an alert is generated.", True),
             "motion_threshold": ("Motion Threshold (pixels)", 500, 20000, 195, "Minimum amount of pixel change required before AI analysis is activated.", True),
             "motion_ratio": ("Motion Ratio", 0.001, 0.050, 49, "Percentage of the image frame that must change before the AI engine wakes from motion-gating mode.", False),
-            "yolo_knife_conf": ("Knife Confidence", 0.05, 0.95, 90, "Minimum YOLOv8 confidence score required before a knife detection is accepted.", False),
-            "yolo_cell_conf": ("Cellphone Confidence", 0.05, 0.95, 90, "Minimum YOLOv8 confidence score required before a cellphone detection is accepted.", False),
-            "yolo_fallback_conf": ("Fallback Confidence", 0.05, 0.95, 90, "General confidence threshold used for detections that do not have a dedicated class-specific threshold.", False)
+            "yolo_knife_conf": ("Knife Confidence", 0.05, 0.95, 90, "Minimum YOLOv8 confidence score required before a knife detection is accepted. Increasing this reduces false alarms but may miss actual weapons. Decreasing this detects more but increases false positives.", False),
+            "yolo_cell_conf": ("Cellphone Confidence", 0.05, 0.95, 90, "Minimum YOLOv8 confidence score required before a cellphone detection is accepted. Increasing this reduces false alarms but may miss actual devices. Decreasing this detects more but increases false positives.", False),
+            "yolo_fallback_conf": ("Fallback Confidence", 0.05, 0.95, 90, "General confidence threshold used for detections that do not have a dedicated class-specific threshold. Increasing this reduces false alarms. Decreasing this detects more but increases false positives.", False)
         }
 
         self.PRESETS = {
@@ -526,13 +526,62 @@ class SettingsScreen(ctk.CTkFrame):
             else: self.slider_val_labels[key].configure(text=f"{val:.3f}" if key == "motion_ratio" else f"{val:.2f}")
             if profile_key in self.PRESETS or not self.is_admin: self.sliders[key].configure(state="disabled")
 
+        # Developer Options Card
+        dev_frame = ctk.CTkFrame(group, fg_color=PALETTE["card"], corner_radius=12, border_width=1, border_color="#e5c07b")
+        dev_frame.grid(row=4, column=0, sticky="ew", padx=22, pady=(0, 10))
+        ctk.CTkLabel(dev_frame, text="DEVELOPER OPTIONS (EXPERIMENTAL)", font=("Segoe UI Bold", 13), text_color="#e5c07b").pack(anchor="w", padx=16, pady=(12, 5))
+        
+        dev_content = ctk.CTkFrame(dev_frame, fg_color="transparent")
+        dev_content.pack(fill="x", padx=16, pady=(0, 12))
+        
+        # imgsz radio buttons
+        ctk.CTkLabel(dev_content, text="YOLO Inference Resolution (imgsz):", font=("Segoe UI Semibold", 12), text_color=PALETTE["text"]).grid(row=0, column=0, sticky="w", pady=(5, 5))
+        self.dev_imgsz_var = tk.IntVar(value=960)
+        imgsz_frame = ctk.CTkFrame(dev_content, fg_color="transparent")
+        imgsz_frame.grid(row=0, column=1, sticky="w", padx=15)
+        for val in [640, 960, 1280]:
+            rb = ctk.CTkRadioButton(imgsz_frame, text=str(val), variable=self.dev_imgsz_var, value=val, font=("Segoe UI", 12), fg_color="#e5c07b", hover_color="#d19a66", text_color=PALETTE["text"])
+            rb.pack(side="left", padx=(0, 15))
+            self.admin_only_widgets.append(rb)
+            
+        # motion gate toggles
+        ctk.CTkLabel(dev_content, text="Motion Gating (Disable to run every frame, lowering FPS):", font=("Segoe UI Semibold", 12), text_color=PALETTE["text"]).grid(row=1, column=0, sticky="w", pady=(10, 5))
+        gate_frame = ctk.CTkFrame(dev_content, fg_color="transparent")
+        gate_frame.grid(row=1, column=1, sticky="w", padx=15, pady=(10, 5))
+        
+        self.dev_gate_movenet_var = tk.BooleanVar(value=True)
+        self.dev_gate_yolo_var = tk.BooleanVar(value=True)
+        
+        gate_m = ctk.CTkSwitch(gate_frame, text="MoveNet Gated", variable=self.dev_gate_movenet_var, font=("Segoe UI", 12), progress_color="#e5c07b", text_color=PALETTE["text"])
+        gate_m.pack(side="left", padx=(0, 15))
+        self.admin_only_widgets.append(gate_m)
+        
+        gate_y = ctk.CTkSwitch(gate_frame, text="YOLO Gated", variable=self.dev_gate_yolo_var, font=("Segoe UI", 12), progress_color="#e5c07b", text_color=PALETTE["text"])
+        gate_y.pack(side="left")
+        self.admin_only_widgets.append(gate_y)
+        
+        # Load values
+        from monitor_app.config import get_config
+        self.dev_imgsz_var.set(get_config("yolo", "inference_imgsz", 960))
+        self.dev_gate_movenet_var.set(get_config("motion_gate", "motion_gate_movenet_enabled", True))
+        self.dev_gate_yolo_var.set(get_config("motion_gate", "motion_gate_yolo_enabled", True))
+
         footer = ctk.CTkFrame(group, fg_color="transparent")
-        footer.grid(row=4, column=0, sticky="ew", padx=22, pady=(0, 22))
+        footer.grid(row=5, column=0, sticky="ew", padx=22, pady=(0, 22))
         ctk.CTkLabel(footer, text="Settings are saved locally and applied to the AI engine on startup.", font=("Segoe UI", 12), text_color=PALETTE["subtle"], anchor="w").pack(side="left")
         
         self.monitoring_save_button = ctk.CTkButton(footer, text="Save AI Preferences", font=("Segoe UI Semibold", 13), fg_color=PALETTE["success"], hover_color=PALETTE["success_hover"], text_color=PALETTE["page"], height=44, corner_radius=12, command=self.save_settings)
         self.monitoring_save_button.pack(side="right")
         self.admin_only_widgets.append(self.monitoring_save_button)
+
+        self.btn_manage_cams = ctk.CTkButton(
+            footer, text="Manage Camera Network", font=("Segoe UI Semibold", 13),
+            fg_color=PALETTE["accent"], hover_color=PALETTE["accent_hover"],
+            text_color=PALETTE["page"], height=44, corner_radius=12,
+            command=self._open_camera_management
+        )
+        self.btn_manage_cams.pack(side="right", padx=(0, 10))
+        self.admin_only_widgets.append(self.btn_manage_cams)
 
         self.monitoring_reset_button = ctk.CTkButton(
             footer, text="Reset Custom to Medium", font=("Segoe UI Semibold", 13),
@@ -601,6 +650,21 @@ class SettingsScreen(ctk.CTkFrame):
                 
         messagebox.showinfo("Monitoring Preferences", "Custom settings reset to Medium preset baseline. Click Save to persist.")
 
+    def _open_camera_management(self):
+        from monitor_app.camera_view import CameraManagementDialog
+        from monitor_app.main import CellWatchApp
+        # Get reference to the root app to refresh Live Monitor
+        root = self.winfo_toplevel()
+        
+        def _on_refresh():
+            if hasattr(root, "frames") and "Live Monitor" in root.frames:
+                root.frames["Live Monitor"].refresh_cameras()
+
+        dialog = CameraManagementDialog(self, on_refresh=_on_refresh)
+        dialog.grab_set()
+        dialog.focus_force()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: (dialog.grab_release(), dialog.on_refresh(), dialog.destroy()))
+
     def _configure_tree_style(self):
         style = ttk.Style()
         style.configure("Accounts.Treeview", background=PALETTE["card"], foreground=PALETTE["text"], fieldbackground=PALETTE["card"], rowheight=32, borderwidth=0, relief="flat", font=("Segoe UI", 10))
@@ -627,6 +691,22 @@ class SettingsScreen(ctk.CTkFrame):
         return entry
 
     def _apply_access_rules(self):
+        from monitor_app.utils import GlobalState
+        if GlobalState.benchmark_active:
+            if self.show_identity:
+                self.branding_status_var.set("LOCKED (Benchmark)")
+                self.account_status_var.set("Settings locked during active benchmark run.")
+            if self.show_monitoring:
+                self.monitoring_state_var.set("LOCKED (Benchmark)")
+            for widget in self.admin_only_widgets:
+                try:
+                    widget.configure(state="disabled")
+                except Exception:
+                    pass
+            if hasattr(self, "account_description_box"):
+                self.account_description_box.configure(state="disabled")
+            return
+
         if self.is_admin:
             return
         if self.show_identity:
@@ -880,12 +960,22 @@ class SettingsScreen(ctk.CTkFrame):
         try:
             profile_store.save_ai_settings(profile, custom_vals, actor_username=self.current_user.get("username") if self.current_user else "system")
             
+            # Save developer options
+            from monitor_app.config import save_developer_config
+            dev_updates = {
+                "inference_imgsz": self.dev_imgsz_var.get(),
+                "motion_gate_movenet_enabled": self.dev_gate_movenet_var.get(),
+                "motion_gate_yolo_enabled": self.dev_gate_yolo_var.get()
+            }
+            save_developer_config(dev_updates)
+            
             # Live-apply to running engine
             try:
                 from monitor_app.central_inference import get_inference_manager
                 engine = get_inference_manager().engine
                 if engine:
                     engine._set_logic_sensitivity(profile, custom_vals)
+                    # Note: engine reads developer configs on-the-fly via get_config() so no need to push them
                     print(f"Applied AI settings live to central inference engine: profile={profile}")
             except Exception as e:
                 print(f"Failed to live-apply AI settings: {e}")

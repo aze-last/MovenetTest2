@@ -1,7 +1,39 @@
+import os
+import sys
 import random
 import time
 import tkinter as tk
 from tkinter import ttk
+
+# --- PyInstaller Path Helpers ---
+def resource_path(relative_path):
+    """
+    Get the absolute path to a read-only bundled resource.
+    Works for dev and for PyInstaller --onefile mode.
+    """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # In dev, the base path is the parent of monitor_app
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    return os.path.join(base_path, relative_path)
+
+def data_path(relative_path):
+    """
+    Get the absolute path for read-write application data.
+    Ensures data survives when PyInstaller closes (parallel to sys.executable).
+    """
+    if getattr(sys, 'frozen', False):
+        # We are running in a bundle (PyInstaller)
+        # Store data parallel to the .exe file
+        base_path = os.path.dirname(sys.executable)
+    else:
+        # We are running in a normal Python environment
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+    return os.path.join(base_path, relative_path)
 
 # --- Constants & Config ---
 APP_TITLE = "CellWatch AI"
@@ -126,6 +158,11 @@ class GlobalState:
     active_alerts = set() # Set of camera IDs with active alerts
     last_total_detections = 0
     system_status = "ONLINE"
+    start_time = time.time()
+    
+    # Benchmark Configuration Lock
+    benchmark_active = False
+    _benchmark_frozen_config = None
     
     @classmethod
     def register_camera(cls, cam_id):
@@ -152,5 +189,24 @@ class GlobalState:
             "active_cams": len(cls.active_cameras),
             "active_alerts": len(cls.active_alerts),
             "status": cls.system_status,
-            "total_detections": cls.last_total_detections
+            "total_detections": cls.last_total_detections,
+            "benchmark_active": cls.benchmark_active,
         }
+
+    @classmethod
+    def lock_benchmark(cls, frozen_config: dict):
+        """Freeze configuration during benchmark. Prevents operator changes."""
+        cls.benchmark_active = True
+        cls._benchmark_frozen_config = frozen_config
+
+    @classmethod
+    def unlock_benchmark(cls):
+        """Release configuration lock after benchmark ends."""
+        cls.benchmark_active = False
+        cls._benchmark_frozen_config = None
+
+    @classmethod
+    def get_frozen_config(cls):
+        """Returns the locked configuration snapshot, or None if unlocked."""
+        return cls._benchmark_frozen_config
+

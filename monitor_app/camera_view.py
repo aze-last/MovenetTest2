@@ -92,7 +92,7 @@ class CameraManagementDialog(ctk.CTkToplevel):
     def __init__(self, parent, on_refresh):
         super().__init__(parent)
         self.title("Manage Camera Network")
-        self.geometry("640x520")
+        self.geometry("700x650")
         self.on_refresh = on_refresh
         self.after(200, lambda: self.focus_force())
         
@@ -112,6 +112,7 @@ class CameraManagementDialog(ctk.CTkToplevel):
         
         self._build_ui()
         self._load_cameras()
+        self._scan_local_cameras()
 
     def _build_ui(self):
         # Header
@@ -145,15 +146,37 @@ class CameraManagementDialog(ctk.CTkToplevel):
         self.entry_name = ctk.CTkEntry(inner_form, textvariable=self.name_var, placeholder_text="e.g. Front Gate", height=36, corner_radius=8)
         self.entry_name.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 10))
         
-        ctk.CTkLabel(inner_form, text="Source (URL or Index)", font=("Segoe UI Semibold", 12), text_color=self.PALETTE["muted"]).grid(row=0, column=1, sticky="w", padx=5)
-        self.entry_src = ctk.CTkEntry(inner_form, textvariable=self.source_var, placeholder_text="e.g. 0 or rtsp://...", height=36, corner_radius=8)
+        src_header = ctk.CTkFrame(inner_form, fg_color="transparent")
+        src_header.grid(row=0, column=1, sticky="ew", padx=5)
+        ctk.CTkLabel(src_header, text="Source (URL or Index)", font=("Segoe UI Semibold", 12), text_color=self.PALETTE["muted"]).pack(side="left")
+        ctk.CTkButton(src_header, text="Scan Webcams", width=80, height=20, corner_radius=6, fg_color=self.PALETTE["border"], command=self._scan_local_cameras).pack(side="right")
+        self.entry_src = ctk.CTkComboBox(inner_form, variable=self.source_var, values=["rtsp://..."], height=36, corner_radius=8)
         self.entry_src.grid(row=1, column=1, sticky="ew", padx=5, pady=(0, 10))
         
         inner_form.grid_columnconfigure((0, 1), weight=1)
         
+        # Advanced RTSP Config
+        rtsp_frame = ctk.CTkFrame(inner_form, fg_color="transparent")
+        rtsp_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 10))
+        
+        self.ip_var = tk.StringVar()
+        self.port_var = tk.StringVar(value="554")
+        self.path_var = tk.StringVar(value="/stream")
+        
+        ctk.CTkLabel(rtsp_frame, text="Advanced RTSP Configuration", font=("Segoe UI Semibold", 12), text_color=self.PALETTE["accent"]).pack(anchor="w")
+        
+        rtsp_inputs = ctk.CTkFrame(rtsp_frame, fg_color="transparent")
+        rtsp_inputs.pack(fill="x", pady=5)
+        
+        ctk.CTkEntry(rtsp_inputs, textvariable=self.ip_var, placeholder_text="IP Address (e.g. 192.168.1.100)", width=200, height=32).pack(side="left", padx=(0, 5))
+        ctk.CTkEntry(rtsp_inputs, textvariable=self.port_var, placeholder_text="Port (554)", width=80, height=32).pack(side="left", padx=5)
+        ctk.CTkEntry(rtsp_inputs, textvariable=self.path_var, placeholder_text="Path (/stream)", width=120, height=32).pack(side="left", padx=5)
+        
+        ctk.CTkButton(rtsp_inputs, text="Build URL", height=32, corner_radius=8, fg_color=self.PALETTE["border"], command=self._build_rtsp_url).pack(side="left", padx=5)
+
         # Action Buttons
         btn_box = ctk.CTkFrame(inner_form, fg_color="transparent")
-        btn_box.grid(row=2, column=0, columnspan=2, sticky="e")
+        btn_box.grid(row=3, column=0, columnspan=2, sticky="e")
         
         self.btn_save = ctk.CTkButton(btn_box, text="Add Camera", height=32, corner_radius=8, fg_color=self.PALETTE["accent"], command=self._save_camera)
         self.btn_save.pack(side="right", padx=5)
@@ -180,7 +203,7 @@ class CameraManagementDialog(ctk.CTkToplevel):
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
         # Delete Button
-        self.btn_del = ctk.CTkButton(self.main, text="Delete Selected", height=32, corner_radius=8, fg_color="#2a1b1f", hover_color="#7a434e", command=self._delete_camera)
+        self.btn_del = ctk.CTkButton(self.main, text="Delete Selected", height=32, corner_radius=8, fg_color=self.PALETTE["danger"], hover_color="#c84545", command=self._delete_camera)
         self.btn_del.pack(side="left", anchor="sw", pady=(10, 0))
 
         # Explicit Return Button
@@ -198,6 +221,26 @@ class CameraManagementDialog(ctk.CTkToplevel):
         for c in cams:
             self.tree.insert("", "end", iid=str(c["camera_id"]), values=(c["camera_id"], c["name"], c["source"]))
 
+    def _scan_local_cameras(self):
+        self.entry_src.configure(values=["Scanning..."])
+        import threading
+        def _scan():
+            import cv2
+            available = []
+            for i in range(6):
+                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                if cap.isOpened():
+                    available.append(str(i))
+                    cap.release()
+            self.after(0, lambda: self._update_source_combobox(available))
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _update_source_combobox(self, available):
+        opts = available + ["rtsp://<ip>:<port>/stream"]
+        self.entry_src.configure(values=opts)
+        if available and not self.source_var.get():
+            self.source_var.set(available[0])
+
     def _on_select(self, _):
         sel = self.tree.selection()
         if not sel: return
@@ -211,8 +254,25 @@ class CameraManagementDialog(ctk.CTkToplevel):
         self.selected_cam_id = None
         self.name_var.set("")
         self.source_var.set("")
+        self.ip_var.set("")
+        self.port_var.set("554")
+        self.path_var.set("/stream")
         self.btn_save.configure(text="Add Camera")
         self.tree.selection_remove(self.tree.selection())
+
+    def _build_rtsp_url(self):
+        ip = self.ip_var.get().strip()
+        port = self.port_var.get().strip() or "554"
+        path = self.path_var.get().strip()
+        if not path.startswith("/"): path = "/" + path
+        if ip:
+            url = f"rtsp://{ip}:{port}{path}"
+            vals = list(self.entry_src.cget("values"))
+            if url not in vals:
+                vals.append(url)
+                self.entry_src.configure(values=vals)
+            self.source_var.set(url)
+
 
     def _save_camera(self):
         name = self.name_var.get()
@@ -287,22 +347,48 @@ class CameraMonitorScreen(ttk.Frame):
             text_color=self.PALETTE["accent"]
         ).pack(side="left", padx=25)
 
-        self.btn_manage = ctk.CTkButton(
-            self.header, 
-            text="+", 
-            width=40, height=40, 
+        self.btn_benchmark = ctk.CTkButton(
+            self.header,
+            text="Start Benchmark",
+            width=120, height=40,
             corner_radius=10,
-            fg_color=self.PALETTE["accent"],
-            font=("Segoe UI Bold", 20),
-            command=self._open_management
+            fg_color="#50d186",
+            hover_color="#3fa86d",
+            font=("Segoe UI Bold", 12),
+            state="disabled",
+            command=self.toggle_benchmark
         )
-        self.btn_manage.pack(side="right", padx=20)
+        self.btn_benchmark.pack(side="right", padx=5)
+        self._poll_engine_ready()
 
-        # 2. Camera Grid Container
+        self.btn_dashboard = ctk.CTkButton(
+            self.header,
+            text="Validation Dashboard",
+            width=150, height=40,
+            corner_radius=10,
+            fg_color="#4f84bb",
+            hover_color="#3c6b9b",
+            font=("Segoe UI Bold", 12),
+            command=self.open_validation_dashboard
+        )
+        self.btn_dashboard.pack(side="right", padx=5)
+
+        # 3. Camera Grid Container
         self.grid_container = ctk.CTkFrame(self, fg_color=self.PALETTE["bg"], corner_radius=0)
         self.grid_container.pack(fill="both", expand=True)
 
         self._load_feeds()
+
+    def _poll_engine_ready(self):
+        from monitor_app.central_inference import get_inference_manager
+        manager = get_inference_manager()
+        from monitor_app.utils import GlobalState
+        if manager.engine is not None:
+            if not GlobalState.benchmark_active:
+                self.btn_benchmark.configure(state="normal")
+        else:
+            self.btn_benchmark.configure(state="disabled")
+        self.after(1000, self._poll_engine_ready)
 
     def _load_feeds(self):
         # Clear existing
@@ -370,6 +456,48 @@ class CameraMonitorScreen(ttk.Frame):
         from monitor_app.central_inference import get_inference_manager
         get_inference_manager().stop()
 
+    def toggle_benchmark(self):
+        from monitor_app.utils import GlobalState
+        from monitor_app.benchmark.__main__ import CellWatchBenchmark, BenchmarkProfile, BenchmarkState
+        import threading
+        
+        if GlobalState.benchmark_active:
+            if hasattr(self, "benchmark_runner"):
+                self.benchmark_runner.state = BenchmarkState.STOPPING
+            return
+            
+        self.benchmark_runner = CellWatchBenchmark()
+        
+        def _run():
+            # Start verification run directly on live feeds
+            self.benchmark_runner.run_profile(BenchmarkProfile.QUICK, len(self.cameras))
+            
+        threading.Thread(target=_run, daemon=True).start()
+        # Start updates loop
+        self.after(1000, self.update_benchmark_metrics)
+
+    def update_benchmark_metrics(self):
+        from monitor_app.utils import GlobalState
+        if not GlobalState.benchmark_active:
+            self.btn_benchmark.configure(text="Start Benchmark", fg_color="#50d186", state="normal")
+            return
+            
+        self.btn_benchmark.configure(text="Stop Benchmark", fg_color="#f25c5c", state="normal")
+        self.after(500, self.update_benchmark_metrics)
+
+    def open_validation_dashboard(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Validation Dashboard")
+        dialog.geometry("1000x700")
+        
+        from monitor_app.telemetry.benchmark_center import ValidationCenterScreen
+        screen = ValidationCenterScreen(dialog)
+        screen.pack(fill="both", expand=True)
+        
+        dialog.grab_set()
+        dialog.focus_force()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: (dialog.grab_release(), dialog.destroy()))
+
 
 class CameraFeedWidget(ttk.Frame):
     def __init__(self, parent, camera_id, name, source=None):
@@ -417,6 +545,15 @@ class CameraFeedWidget(ttk.Frame):
             font=utils.FONT_BOLD
         )
         self.lbl_status.pack(side="right")
+
+        self.lbl_frame_counter = ttk.Label(
+            header,
+            text="",
+            foreground="#a2b5c7",
+            style="Card.TLabel",
+            font=utils.FONT_BOLD
+        )
+        self.lbl_frame_counter.pack(side="right", padx=(0, 15))
 
         self.canvas = tk.Canvas(self, bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=2, pady=2)
@@ -484,6 +621,8 @@ class CameraFeedWidget(ttk.Frame):
         
         reconnect_delay = initial_backoff
         MAX_CONSECUTIVE_FAILURES = 60  # ~2 seconds of failures before reconnect
+        
+        benchmark_frame_idx = 0
         
         while self.running:
             if not self.cap or not self.cap.isOpened():
@@ -557,14 +696,67 @@ class CameraFeedWidget(ttk.Frame):
                 
                 if gate_active:
                     # Initialize initial packet and submit to centralized GPU queue
+                    from monitor_app.telemetry import TelemetryContext, get_telemetry_engine
+                    telemetry_ctx = TelemetryContext(camera_id=str(self.camera_id), sequence_num=benchmark_frame_idx)
+                    telemetry_ctx.mark("camera_read_end")
+                    get_telemetry_engine().register_context(telemetry_ctx)
+                    
+                    from monitor_app.events import get_event_bus, TELEM_FRAME_READ
+                    get_event_bus().publish(TELEM_FRAME_READ, TELEM_FRAME_READ, {
+                        "camera_id": str(self.camera_id),
+                        "frame_uuid": telemetry_ctx.frame_uuid,
+                        "timestamps": {
+                            "camera_read_start": telemetry_ctx.timestamps.get("camera_read_start", time.perf_counter()),
+                            "camera_read_end": telemetry_ctx.timestamps.get("camera_read_end", time.perf_counter())
+                        }
+                    })
+                    
                     packet = EvidencePacket(
                         camera_id=str(self.camera_id),
                         timestamp=time.time(),
                         frame=raw_frame,
                         motion_detected=True,
-                        motion_score=score
+                        motion_score=score,
+                        frame_uuid=telemetry_ctx.frame_uuid
                     )
                     packet = manager.submit_task(packet)
+                    
+                    # Benchmark Logging Hook
+                    from monitor_app.utils import GlobalState
+                    if GlobalState.benchmark_active:
+                        from monitor_app.benchmark.session_manager import get_session_manager
+                        session = get_session_manager().get_active_session()
+                        if session:
+                            session.log_event(
+                                timestamp=time.time(),
+                                event_type="frame",
+                                camera_id=str(self.camera_id),
+                                confidence=score,
+                                latency_ms=0.0,
+                                message="Frame sent to GPU",
+                                payload={
+                                    "frame_index": benchmark_frame_idx,
+                                    "boxes": packet.boxes if hasattr(packet, 'boxes') else [],
+                                    "keypoints": packet.keypoints if hasattr(packet, 'keypoints') else []
+                                }
+                            )
+                        benchmark_frame_idx += 1
+                        def _update_lbl(idx=benchmark_frame_idx):
+                            try:
+                                self.lbl_frame_counter.configure(text=f"Frames: {idx}")
+                            except Exception:
+                                pass
+                        self.after(0, _update_lbl)
+                    else:
+                        # Reset if benchmark just ended
+                        if benchmark_frame_idx > 0:
+                            benchmark_frame_idx = 0
+                            def _clear_lbl():
+                                try:
+                                    self.lbl_frame_counter.configure(text="")
+                                except Exception:
+                                    pass
+                            self.after(0, _clear_lbl)
                 else:
                     # Skip full AI, gate locally on CPU (Power Saving)
                     annotated_frame = raw_frame.copy()

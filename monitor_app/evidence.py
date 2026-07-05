@@ -1,6 +1,101 @@
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
+from enum import Enum
+
+
+class IncidentType(Enum):
+    CELLPHONE = "Cellphone"
+    KNIFE = "Knife"
+    AGGRESSION = "Aggression"
+    SUSPICIOUS_CONCEALMENT = "Suspicious Concealment"
+    FAST_MOVEMENT = "Fast Movement"
+    UNKNOWN = "Unknown"
+
+
+class HandSide(Enum):
+    LEFT = "left"
+    RIGHT = "right"
+
+
+class HandObservationState(Enum):
+    VISIBLE = "visible"
+    CONCEALED = "concealed"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class HandObservation:
+    """Per-camera hand visibility observation before multi-camera fusion."""
+    camera_id: str
+    stable_id: int
+    hand: HandSide
+    state: HandObservationState
+    confidence: float
+    timestamp: float
+    frame_index: int
+    sources: Dict[str, Any] = field(default_factory=dict)
+    view_quality: float = 0.0
+    hip_centroid: Optional[Tuple[float, float]] = None
+
+
+@dataclass
+class FusedConcealmentObservation:
+    """Zone-level fused hand state across multiple cameras."""
+    zone_id: str
+    subject_slot: int
+    hand: HandSide
+    fused_state: HandObservationState
+    fused_confidence: float
+    supporting_cameras: List[str] = field(default_factory=list)
+    vetoing_cameras: List[str] = field(default_factory=list)
+    unknown_cameras: List[str] = field(default_factory=list)
+    camera_stable_ids: Dict[str, int] = field(default_factory=dict)
+
+
+class SnapshotResult(Enum):
+    SUCCESS = "Success"
+    NO_FRAME = "No Frame"
+    NO_TRACK = "No Track"
+    NOT_CRITICAL = "Not Critical"
+    WRITE_FAILED = "Write Failed"
+    DIRECTORY_FAILED = "Directory Failed"
+    INVALID_IMAGE = "Invalid Image"
+    PENDING = "Pending"
+
+
+@dataclass
+class IncidentRecord:
+    incident_id: str
+    incident_type: IncidentType
+    frame_number: int
+    timestamp: float
+    video_time: str
+    subject_track_id: int
+    raw_score: float
+    normalized_score: float
+    snapshot_required: bool
+    snapshot_reason: str
+    snapshot_filename: str
+    snapshot_result: SnapshotResult
+    notes: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "incident_id": self.incident_id,
+            "incident_type": self.incident_type.value,
+            "frame_number": self.frame_number,
+            "timestamp": self.timestamp,
+            "video_time": self.video_time,
+            "subject_track_id": self.subject_track_id,
+            "raw_score": self.raw_score,
+            "normalized_score": self.normalized_score,
+            "snapshot_required": self.snapshot_required,
+            "snapshot_reason": self.snapshot_reason,
+            "snapshot_filename": self.snapshot_filename,
+            "snapshot_result": self.snapshot_result.value,
+            "notes": self.notes
+        }
 
 
 @dataclass
@@ -52,6 +147,8 @@ class EvidencePacket:
     processing_mode: str = "Standard"
     tracked_persons: List[TrackedPerson] = field(default_factory=list)
     behavior_evidence: List[BehaviorEvidence] = field(default_factory=list)
+    fused_concealment: List["FusedConcealmentObservation"] = field(default_factory=list)
+    frame_uuid: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert payload to raw dictionary for backward compatibility."""
@@ -66,6 +163,7 @@ class EvidencePacket:
             "alerts": self.alerts,
             "detections": self.detections,
             "processing_mode": self.processing_mode,
+            "frame_uuid": self.frame_uuid,
             "tracked_persons": [
                 {
                     "stable_id": person.stable_id,
@@ -151,4 +249,5 @@ class EvidencePacket:
             processing_mode=str(data.get("processing_mode", "Standard")),
             tracked_persons=tracked_persons,
             behavior_evidence=behavior_evidence,
+            frame_uuid=data.get("frame_uuid")
         )
