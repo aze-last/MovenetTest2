@@ -447,8 +447,49 @@ class CameraMonitorScreen(ttk.Frame):
     def start_monitoring(self):
         from monitor_app.central_inference import get_inference_manager
         get_inference_manager().start()
-        for cam in self.cameras:
+        
+        self._show_connecting_overlay()
+        
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        
+        def connect_camera(cam):
             cam.start()
+            return cam
+
+        def connect_all():
+            if self.cameras:
+                with ThreadPoolExecutor(max_workers=len(self.cameras)) as executor:
+                    futures = {executor.submit(connect_camera, cam): cam for cam in self.cameras}
+                    for future in futures:
+                        try:
+                            future.result()
+                        except Exception as e:
+                            print(f"[Camera] Failed to connect {futures[future]}: {e}")
+            self.after(0, self._hide_connecting_overlay)
+            self.after(0, self._refresh_camera_widgets)
+            
+        threading.Thread(target=connect_all, daemon=True).start()
+
+    def _show_connecting_overlay(self):
+        if not hasattr(self, 'loading_overlay') or not self.loading_overlay.winfo_exists():
+            self.loading_overlay = ctk.CTkFrame(self.grid_container, fg_color="black", bg_color="black")
+            self.loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+            
+            lbl = ctk.CTkLabel(
+                self.loading_overlay, 
+                text="Connecting to cameras...", 
+                font=("Segoe UI Bold", 24), 
+                text_color="white"
+            )
+            lbl.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _hide_connecting_overlay(self):
+        if hasattr(self, 'loading_overlay') and self.loading_overlay.winfo_exists():
+            self.loading_overlay.destroy()
+
+    def _refresh_camera_widgets(self):
+        pass
 
     def stop_monitoring(self):
         for cam in self.cameras:
@@ -582,7 +623,7 @@ class CameraFeedWidget(ttk.Frame):
         
         # Track active cameras globally
         utils.GlobalState.register_camera(self.camera_id)
-        self.update_loop()
+        self.after(0, self.update_loop)
 
     def _open_capture(self):
         """Open (or reopen) the video capture with fallback backends."""
@@ -596,9 +637,15 @@ class CameraFeedWidget(ttk.Frame):
         src = self.source
         # Try MSMF first (Windows default), then DirectShow fallback
         backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY] if isinstance(src, int) else [cv2.CAP_ANY]
+        
+        import os
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000"
+        
         for backend in backends:
             try:
                 cap = cv2.VideoCapture(src, backend)
+                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+                
                 if cap.isOpened():
                     if isinstance(src, int):
                         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -611,6 +658,14 @@ class CameraFeedWidget(ttk.Frame):
             except Exception as e:
                 print(f"Camera {self.camera_id} backend {backend} failed: {e}")
         print(f"Camera {self.camera_id}: could not open source '{src}'")
+        
+        def _set_offline():
+            try:
+                self.lbl_status.configure(text="OFFLINE", foreground="#f25c5c")
+                self.draw_placeholder("Offline")
+            except Exception:
+                pass
+        self.after(0, _set_offline)
 
     def _worker_loop(self):
         """Background thread for capturing and processing frames."""
