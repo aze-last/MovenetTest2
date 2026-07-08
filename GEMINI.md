@@ -1,6 +1,13 @@
 # CellWatch AI
 ## Coordinator Manifest, Engineering Constitution & Project Context
 
+## Movenet is running on CPU and YOLO runs GPU
+## Target Hardware: Windows Laptop with NVIDIA RTX 2050
+## Target FPS: 20-30 FPS
+## Everytime the developer do everyday work/job for oyu you will make a documentation on what was change which line is it and what is the purpose of it on this file C:\Users\ASUS\PycharmProjects\MovenetTutorial\capstone_progress_report.md
+## Dont remove any code, if you need to remove a line/code make sure to make a documentation about it and its purpose.
+## Also bundle everything inside this zip folder C:\Users\ASUS\PycharmProjects\MovenetTutorial\changes_today.zip but only the changes that you did today
+
 Version: 2.0
 Project Type: Undergraduate Capstone (Production-Oriented Research Prototype)
 

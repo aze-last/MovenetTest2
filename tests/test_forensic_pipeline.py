@@ -71,3 +71,38 @@ def test_generate_incident_record_unknown():
     assert incident.incident_type == IncidentType.UNKNOWN
     assert incident.snapshot_required is False
     assert incident.snapshot_filename == ""
+
+def test_generate_incident_record_critical_both():
+    engine = get_decision_engine()
+    
+    # Mock behavior packet
+    b_evidence = BehaviorEvidence(
+        behavior_type="Aggressive / Fighting",
+        stable_id=19,
+        confidence=153.36,
+        frame_number=15,
+        timestamp=100.5,
+        sustained_frames=5
+    )
+    
+    packet = EvidencePacket(
+        camera_id="cam_1", 
+        timestamp=100.5,
+        frame=np.zeros((10,10,3), dtype=np.uint8),
+        behavior_evidence=[b_evidence]
+    )
+    packet.detections = {
+        "behavior": [],
+        "contraband": [{"name": "cellphone", "confidence": 0.85, "track_id": 42}]
+    }
+    
+    incident = engine.generate_incident_record(packet, "TEST_SESSION", 15, "00:00:15")
+    
+    # Should prioritize contraband type but raise severity to CRITICAL
+    assert incident.incident_type == IncidentType.CELLPHONE
+    assert incident.severity == "CRITICAL"
+    assert incident.snapshot_required is True
+    assert incident.subject_track_id == 42
+    assert "Severity: CRITICAL" in incident.notes
+    assert "Cellphone Detected" in incident.snapshot_reason
+    assert "Aggression Behavior" in incident.snapshot_reason

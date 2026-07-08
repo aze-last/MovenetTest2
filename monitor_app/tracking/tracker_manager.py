@@ -3,7 +3,6 @@ from ultralytics.utils import IterableSimpleNamespace
 from ultralytics.trackers.byte_tracker import BYTETracker
 from monitor_app.config import get_config
 from monitor_app.events import get_event_bus, TRACK_CREATED, TRACK_UPDATED, TRACK_LOST, TRACK_RECOVERED, TRACK_TERMINATED
-import numpy as np
 
 class TrackerManager:
     def __init__(self, cam_id):
@@ -20,10 +19,10 @@ class TrackerManager:
         
         # Setup Human Tracker
         args_human = IterableSimpleNamespace(
-            track_thresh=human_cfg.get("track_thresh", 0.5),
+            track_thresh=human_cfg.get("track_thresh", 0.50),
             track_buffer=human_cfg.get("track_buffer", 30),
             match_thresh=human_cfg.get("match_thresh", 0.8),
-            frame_rate=15,
+            frame_rate=30,
             track_high_thresh=human_cfg.get("track_thresh", 0.5),
             track_low_thresh=0.1,
             new_track_thresh=human_cfg.get("track_thresh", 0.5) + 0.1,

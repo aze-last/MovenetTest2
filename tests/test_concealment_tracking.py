@@ -114,6 +114,21 @@ def test_stable_id_two_people_crossing():
     assert res[1].stable_id == 1
 
 
+def test_stable_id_mixed_normalized_and_pixel_centroids():
+    tracker = StableIDTracker(max_distance=120.0, grace_period=10)
+
+    existing = make_test_person(raw_person_id=0)
+    existing.hip_centroid = (0.5, 0.6)
+    tracker.update([existing], frame_number=1)
+
+    incoming = make_test_person(raw_person_id=1)
+    incoming.hip_centroid = (1000.0, 1200.0)
+
+    matched = tracker.update([incoming], frame_number=2)
+
+    assert matched[0].stable_id == 1
+
+
 def mock_get_config(section, key, default=None):
     cfg = {
         "tracking": {"stable_id": {"max_distance": 120.0, "grace_frames": 30}},

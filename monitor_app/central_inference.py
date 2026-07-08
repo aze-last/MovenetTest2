@@ -1,6 +1,7 @@
 import threading
 import queue
 import time
+import concurrent.futures
 from typing import Callable, Optional
 from monitor_app.evidence import EvidencePacket
 from monitor_app import profile_store
@@ -17,10 +18,16 @@ class InferenceTask:
 class CentralInferenceManager:
     """
     Centralized Inference Queue manager.
-    Coordinates all YOLOv8 (GPU) and MoveNet (CPU) inference requests in a single thread
-    to prevent VRAM fragmentation, race conditions, and thread locks.
+    Coordinates all YOLOv8 (GPU) and MoveNet (CPU) inference with parallel workers
+    to maximize hardware utilization.
+    
+    Architecture:
+    - Main worker thread: dispatches frames, runs behavior/fusion/decision post-processing
+    - MoveNet thread: dedicated CPU-bound pose estimation
+    - YOLO thread: dedicated GPU-bound object detection
+    - MoveNet and YOLO run concurrently on the same frame, results merge
     """
-    def __init__(self, maxsize: int = 8):
+    def __init__(self, maxsize: int = 16):
         self.task_queue = queue.Queue(maxsize=maxsize)
         self.running = False
         self.worker_thread: Optional[threading.Thread] = None
@@ -31,7 +38,16 @@ class CentralInferenceManager:
         self.inference_paused = False
         self.last_gpu_retry_time = 0.0
         self.frame_indices = {}
-
+        self.movenet_indices = {}
+        self.last_movenet_results = {}
+        self.last_yolo_results = {}
+        
+        self.movenet_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.movenet_pending = {}
+        
+        # Performance tuning parameters
+        self.movenet_skip = 6
+        self.yolo_skip = 3
     def has_active_tracks(self, camera_id: str) -> bool:
         with self.lock:
             last_time = self.last_active_track_times.get(str(camera_id), 0.0)
@@ -67,7 +83,7 @@ class CentralInferenceManager:
             from monitor_app.health import get_health_monitor
             get_health_monitor().register_component("Central Inference", self.get_state)
             
-            logger.info("Queue Worker started.")
+            logger.info("Queue Worker started (parallel MoveNet+YOLO mode).")
 
     def stop(self):
         with self.lock:
@@ -108,13 +124,95 @@ class CentralInferenceManager:
             logger.info("Initializing BasicMotionEngine fallback...")
             self.engine = BasicMotionEngine(sensitivity=profile)
 
+    def _run_parallel_inference(self, frame, camera_id, frame_uuid):
+        """Run MoveNet (CPU) and YOLO (GPU) concurrently on the same frame.
+        Returns merged result dict."""
+        
+        movenet_result = {}
+        yolo_result = {}
+        movenet_error = None
+        yolo_error = None
+        
+        def _movenet_worker(frm_copy, cid):
+            try:
+                ms = time.perf_counter()
+                res = self.engine.run_movenet_only(frm_copy, cid)
+                self.last_movenet_results[cid] = res
+                me = time.perf_counter()
+                print(f"[TIMING] MoveNet (CPU Async): {(me-ms)*1000.0:.1f} ms", flush=True)
+            except Exception as e:
+                print(f"[TIMING] MoveNet Async Error: {e}", flush=True)
+                logger.error(f"MoveNet async error: {e}", camera_id=cid)
+            finally:
+                self.movenet_pending[cid] = False
+        
+        def _yolo_worker():
+            nonlocal yolo_result, yolo_error
+            try:
+                ys = time.perf_counter()
+                yolo_result = self.engine.run_yolo_only(frame, camera_id)
+                self.last_yolo_results[camera_id] = yolo_result
+                ye = time.perf_counter()
+                print(f"[TIMING] YOLO (GPU): {(ye-ys)*1000.0:.1f} ms", flush=True)
+            except Exception as e:
+                print(f"[TIMING] YOLO Error: {e}", flush=True)
+                yolo_error = e
+        
+        # Track local index
+        self.movenet_indices[camera_id] = self.movenet_indices.get(camera_id, 0) + 1
+        f_idx = self.movenet_indices[camera_id]
+
+        # Check what needs to run based on skip
+        has_movenet = self.engine.movenet is not None and (f_idx % self.movenet_skip == 0)
+        has_yolo = self.engine.enable_yolo and self.engine.yolo_custom is not None and (f_idx % self.yolo_skip == 0)
+        
+        # Prevent queueing multiple MoveNet tasks for the same camera
+        if has_movenet and self.movenet_pending.get(camera_id, False):
+            has_movenet = False # Skip this frame for MoveNet if it's still running
+        
+        movenet_result = self.last_movenet_results.get(camera_id, {})
+        yolo_result = self.last_yolo_results.get(camera_id, {})
+        
+        if has_movenet:
+            self.movenet_pending[camera_id] = True
+            # We copy the frame so the array isn't mutated while waiting in executor
+            self.movenet_executor.submit(_movenet_worker, frame.copy(), camera_id)
+            
+        if has_yolo:
+            _yolo_worker()
+            
+        # movenet_result is returned immediately (using previous cached result if available)
+            self.last_yolo_results[camera_id] = yolo_result
+        
+        if movenet_error:
+            logger.error(f"MoveNet parallel error: {movenet_error}", camera_id=camera_id)
+        if yolo_error:
+            logger.error(f"YOLO parallel error: {yolo_error}", camera_id=camera_id)
+        
+        # Merge results: MoveNet provides people/behavior, YOLO provides contraband
+        merged = {
+            "frame": frame,
+            "num_people": movenet_result.get("num_people", 0),
+            "alert_triggered": movenet_result.get("alert_triggered", False) or yolo_result.get("alert_triggered", False),
+            "alerts": movenet_result.get("alerts", []) + yolo_result.get("alerts", []),
+            "detections": {
+                "behavior": movenet_result.get("detections", {}).get("behavior", []),
+                "contraband": yolo_result.get("detections", {}).get("contraband", []),
+            },
+            "processing_mode": "AI ACTIVE (Parallel GPU+CPU)",
+            "tracked_persons": movenet_result.get("tracked_persons", []),
+        }
+        
+        return merged
+
     def _worker_loop(self):
         # 1. Load active settings and initialize AI engine
-        try:
-            self._initialize_engine()
-        except Exception as e:
-            logger.error(f"Engine init failed: {e}")
-            self.engine = None
+        if self.engine is None:
+            try:
+                self._initialize_engine()
+            except Exception as e:
+                logger.error(f"Engine init failed: {e}")
+                self.engine = None
 
         # 2. Main processing loop
         while self.running:
@@ -155,7 +253,47 @@ class CentralInferenceManager:
                         if packet.camera_id == "99":
                             res = packet.to_dict()
                         else:
-                            res = self.engine.process_frame(packet.frame, packet.camera_id, packet.frame_uuid)
+                            # ── PARALLEL INFERENCE: MoveNet (CPU) + YOLO (GPU) concurrently ──
+                            from monitor_app.ai_engine import MotionOptimizedEngine
+                            if isinstance(self.engine, MotionOptimizedEngine):
+                                # Use pre-detected motion to skip redundant computation
+                                motion_flag = packet.motion_detected if packet.motion_detected else None
+                                
+                                # Check if motion gate / ungated processing applies
+                                from monitor_app.config import get_config
+                                gate_cfg = get_config("motion_gate")
+                                movenet_gated = gate_cfg.get("motion_gate_movenet_enabled", True)
+                                yolo_gated = gate_cfg.get("motion_gate_yolo_enabled", True)
+                                
+                                should_run = motion_flag or not movenet_gated or not yolo_gated
+                                
+                                if should_run:
+                                    inf_start = time.perf_counter()
+                                    res = self._run_parallel_inference(
+                                        packet.frame, packet.camera_id, packet.frame_uuid
+                                    )
+                                    inf_end = time.perf_counter()
+                                    inf_ms = (inf_end - inf_start) * 1000.0
+                                    print(f"[TIMING] Full inference cycle (Cam {packet.camera_id}): {inf_ms:.1f} ms", flush=True)
+                                    # Track stats
+                                    with self.engine.lock:
+                                        self.engine.stats["ai_runs"] += 1
+                                        self.engine.stats["total"] += 1
+                                else:
+                                    with self.engine.lock:
+                                        self.engine.stats["total"] += 1
+                                        self.engine.stats["skipped"] += 1
+                                    res = {
+                                        "frame": packet.frame,
+                                        "num_people": 0, "alert_triggered": False,
+                                        "alerts": [], "detections": {"behavior": [], "contraband": []},
+                                        "processing_mode": "Power Saving (No Motion)"
+                                    }
+                            else:
+                                # Fallback: BasicMotionEngine or unknown engine type
+                                res = self.engine.process_frame(
+                                    packet.frame, packet.camera_id, packet.frame_uuid
+                                )
                         
                         # Map outcome back to EvidencePacket
                         packet.frame = res.get("frame", packet.frame)
@@ -377,8 +515,8 @@ class CentralInferenceManager:
                 except queue.Empty:
                     pass
 
-        # Wait for processing with a 5.0 second timeout to prevent GUI freezes during cold starts
-        finished = task.event.wait(timeout=5.0)
+        # Wait for processing with a 3.0 second timeout (reduced from 5.0 for faster recovery)
+        finished = task.event.wait(timeout=3.0)
         if not finished:
             # Timeout recovery
             task.result = packet
@@ -390,8 +528,64 @@ class CentralInferenceManager:
                 get_telemetry_engine().retire_context(packet.frame_uuid)
             
             from monitor_app.monitor_logging import SystemEvents
-            SystemEvents.inference_timeout(packet.camera_id, 5.0)
+            SystemEvents.inference_timeout(packet.camera_id, 3.0)
         return task.result
+
+    def submit_task_async(self, packet: EvidencePacket, callback: Optional[Callable] = None):
+        """
+        Non-blocking task submission. Submits frame and returns immediately.
+        When processing completes, callback(result_packet) is called from a background thread.
+        
+        This prevents camera worker threads from blocking on GPU inference.
+        """
+        task = InferenceTask(packet)
+        
+        if packet.frame_uuid:
+            from monitor_app.telemetry import get_telemetry_engine
+            ctx = get_telemetry_engine().get_context(packet.frame_uuid)
+            if ctx:
+                ctx.mark("queue_enter")
+
+        # Frame dropping policy
+        while True:
+            try:
+                self.task_queue.put_nowait(task)
+                break
+            except queue.Full:
+                try:
+                    dropped_task = self.task_queue.get_nowait()
+                    dropped_task.result = dropped_task.packet
+                    dropped_task.packet.processing_mode = "Queue Drop (Backpressure)"
+                    
+                    from monitor_app.monitor_logging import SystemEvents, get_performance_monitor
+                    get_performance_monitor().track_dropped_frame()
+                    SystemEvents.queue_overflow(dropped_task.packet.camera_id, self.task_queue.qsize())
+                    
+                    if dropped_task.packet.frame_uuid:
+                        from monitor_app.telemetry import get_telemetry_engine
+                        from monitor_app.events import get_event_bus, TELEM_FRAME_DROPPED
+                        get_telemetry_engine().retire_context(dropped_task.packet.frame_uuid)
+                        get_event_bus().publish(TELEM_FRAME_DROPPED, TELEM_FRAME_DROPPED, {
+                            "camera_id": dropped_task.packet.camera_id,
+                            "frame_uuid": dropped_task.packet.frame_uuid,
+                            "reason": "queue_backpressure"
+                        })
+                    
+                    dropped_task.event.set()
+                    self.task_queue.task_done()
+                except queue.Empty:
+                    pass
+
+        # If callback provided, wait in a short-lived thread
+        if callback:
+            def _wait_and_callback():
+                finished = task.event.wait(timeout=3.0)
+                if finished and task.result:
+                    callback(task.result)
+                else:
+                    packet.processing_mode = "Inference Timeout"
+                    callback(packet)
+            threading.Thread(target=_wait_and_callback, daemon=True).start()
 
 # Global Centralized Inference Manager Singleton
 _global_inference_manager = CentralInferenceManager()

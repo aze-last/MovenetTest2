@@ -678,6 +678,7 @@ class CameraFeedWidget(ttk.Frame):
         MAX_CONSECUTIVE_FAILURES = 60  # ~2 seconds of failures before reconnect
         
         benchmark_frame_idx = 0
+        ai_frame_skip_counter = 0
         
         while self.running:
             if not self.cap or not self.cap.isOpened():
@@ -770,11 +771,44 @@ class CameraFeedWidget(ttk.Frame):
                         camera_id=str(self.camera_id),
                         timestamp=time.time(),
                         frame=raw_frame,
-                        motion_detected=True,
+                        motion_detected=True,  # Pre-detected by LocalMotionGater
                         motion_score=score,
                         frame_uuid=telemetry_ctx.frame_uuid
                     )
-                    packet = manager.submit_task(packet)
+                    
+                    # Non-blocking async submission: camera worker continues immediately
+                    # while GPU processes in parallel
+                    cam_self = self  # capture reference for callback closure
+                    def _on_inference_complete(result_packet, _cam_self=cam_self, _bfidx=benchmark_frame_idx):
+                        try:
+                            frame_to_show = result_packet.frame
+                            alert_active = result_packet.alert_triggered
+                            rgb = cv2.cvtColor(frame_to_show, cv2.COLOR_BGR2RGB)
+                            if _cam_self.result_queue.full():
+                                try:
+                                    _cam_self.result_queue.get_nowait()
+                                except queue.Empty:
+                                    pass
+                            _cam_self.result_queue.put((rgb, alert_active))
+                            
+                            # Incident recording
+                            _cam_self.recorder.process_frame(frame_to_show, result_packet.to_dict())
+                        except Exception as e:
+                            print(f"Async callback error (Cam {_cam_self.camera_id}): {e}")
+                    
+                    ai_frame_skip_counter += 1
+                    N = 3  # Frame skip interval
+                    if ai_frame_skip_counter % N == 0:
+                        manager.submit_task_async(packet, callback=_on_inference_complete)
+                    else:
+                        # Skip AI, display raw frame directly to maintain live feed framerate
+                        rgb = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2RGB)
+                        if self.result_queue.full():
+                            try:
+                                self.result_queue.get_nowait()
+                            except queue.Empty:
+                                pass
+                        self.result_queue.put((rgb, False))
                     
                     # Benchmark Logging Hook
                     from monitor_app.utils import GlobalState
@@ -791,8 +825,8 @@ class CameraFeedWidget(ttk.Frame):
                                 message="Frame sent to GPU",
                                 payload={
                                     "frame_index": benchmark_frame_idx,
-                                    "boxes": packet.boxes if hasattr(packet, 'boxes') else [],
-                                    "keypoints": packet.keypoints if hasattr(packet, 'keypoints') else []
+                                    "boxes": [],
+                                    "keypoints": []
                                 }
                             )
                         benchmark_frame_idx += 1
@@ -812,6 +846,9 @@ class CameraFeedWidget(ttk.Frame):
                                 except Exception:
                                     pass
                             self.after(0, _clear_lbl)
+                    
+                    # Camera thread continues to next frame immediately
+                    continue
                 else:
                     # Skip full AI, gate locally on CPU (Power Saving)
                     annotated_frame = raw_frame.copy()
@@ -836,15 +873,14 @@ class CameraFeedWidget(ttk.Frame):
                     processing_mode="No Engine"
                 )
 
-            # Convert to RGB and resize in background to save main thread time
+            # Convert to RGB for non-AI frames (power saving / no engine)
             try:
                 frame_to_show = packet.frame
                 alert_active = packet.alert_triggered
                 rgb = cv2.cvtColor(frame_to_show, cv2.COLOR_BGR2RGB)
-                # We put the processed data into the queue
                 if self.result_queue.full():
                     try:
-                        self.result_queue.get_nowait() # Drop slowest if full
+                        self.result_queue.get_nowait()
                     except queue.Empty:
                         pass
                 self.result_queue.put((rgb, alert_active))
@@ -853,9 +889,6 @@ class CameraFeedWidget(ttk.Frame):
                 self.recorder.process_frame(frame_to_show, packet.to_dict())
             except Exception as e:
                 print(f"Worker process error: {e}")
-
-            # Small sleep to prevent 100% CPU usage if everything is too fast
-            time.sleep(0.001)
 
     def stop(self):
         self.running = False

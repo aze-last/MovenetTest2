@@ -57,7 +57,12 @@ motion_gate:
   enable_delay: 0.5
   minimum_active_duration: 1.0
   motion_gate_movenet_enabled: true
-  motion_gate_yolo_enabled: true
+  motion_gate_yolo_enabled: false
+performance:
+  inference_queue_maxsize: 16
+  parallel_inference: true
+  skip_redundant_motion: true
+  submit_timeout_s: 3.0
 yolo:
   inference_imgsz: 960
   model_path: best.engine

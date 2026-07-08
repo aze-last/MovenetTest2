@@ -82,66 +82,110 @@ class DecisionEngine:
         
         detections = packet.detections
         incident_type = IncidentType.UNKNOWN
-        raw_score = 0.0
-        normalized_score = 0.0
-        subject_track_id = -1
-        snapshot_reason = ""
-        snapshot_required = False
+        
+        has_contraband = False
+        contraband_type = IncidentType.UNKNOWN
+        contraband_score = 0.0
+        contraband_track = -1
+        contraband_reason = ""
 
-        # 1. Check Contraband first (High priority)
+        # 1. Check Contraband
         for c in detections.get('contraband', []):
             name = c.get('name', '').lower()
             if 'cellphone' in name or 'phone' in name:
-                incident_type = IncidentType.CELLPHONE
-                raw_score = c.get('confidence', 0.0)
-                normalized_score = raw_score
-                subject_track_id = c.get('track_id', -1)
-                snapshot_required = True
-                snapshot_reason = "Cellphone Detected"
+                contraband_type = IncidentType.CELLPHONE
+                contraband_score = c.get('confidence', 0.0)
+                contraband_track = c.get('track_id', -1)
+                contraband_reason = "Cellphone Detected"
+                has_contraband = True
                 break
             elif 'knife' in name:
-                incident_type = IncidentType.KNIFE
-                raw_score = c.get('confidence', 0.0)
-                normalized_score = raw_score
-                subject_track_id = c.get('track_id', -1)
-                snapshot_required = True
-                snapshot_reason = "Knife Detected"
+                contraband_type = IncidentType.KNIFE
+                contraband_score = c.get('confidence', 0.0)
+                contraband_track = c.get('track_id', -1)
+                contraband_reason = "Knife Detected"
+                has_contraband = True
                 break
 
-        # 2. Check Behavior if Contraband didn't trigger critical
-        if incident_type == IncidentType.UNKNOWN or not snapshot_required:
-            if packet.behavior_evidence:
-                for b in self._filter_behavior_evidence(packet.behavior_evidence):
-                    b_type = b.behavior_type.lower()
-                    if "aggression" in b_type or "aggressive" in b_type or "fight" in b_type:
-                        incident_type = IncidentType.AGGRESSION
-                        raw_score = b.confidence
-                        normalized_score = min(raw_score / 200.0, 1.0) # mock threshold
-                        subject_track_id = b.stable_id
-                        snapshot_required = True
-                        snapshot_reason = "Aggression Behavior"
-                        break
-                    elif "conceal" in b_type:
-                        incident_type = IncidentType.SUSPICIOUS_CONCEALMENT
-                        raw_score = b.confidence
-                        normalized_score = min(raw_score / 150.0, 1.0)
-                        subject_track_id = b.stable_id
-                        snapshot_required = True
-                        snapshot_reason = "Concealment Behavior"
-                        break
-                    elif "fast" in b_type:
-                        if incident_type == IncidentType.UNKNOWN:
-                            incident_type = IncidentType.FAST_MOVEMENT
-                            raw_score = b.confidence
-                            normalized_score = min(raw_score / 100.0, 1.0)
-                            subject_track_id = b.stable_id
-                            
+        has_behavior = False
+        behavior_type = IncidentType.UNKNOWN
+        behavior_raw_score = 0.0
+        behavior_norm_score = 0.0
+        behavior_track = -1
+        behavior_reason = ""
+
+        # 2. Check Behavior independently
+        if packet.behavior_evidence:
+            for b in self._filter_behavior_evidence(packet.behavior_evidence):
+                b_type = b.behavior_type.lower()
+                if "aggression" in b_type or "aggressive" in b_type or "fight" in b_type:
+                    behavior_type = IncidentType.AGGRESSION
+                    behavior_raw_score = b.confidence
+                    behavior_norm_score = min(b.confidence / 200.0, 1.0) # mock threshold
+                    behavior_track = b.stable_id
+                    behavior_reason = "Aggression Behavior"
+                    has_behavior = True
+                    break
+                elif "conceal" in b_type:
+                    behavior_type = IncidentType.SUSPICIOUS_CONCEALMENT
+                    behavior_raw_score = b.confidence
+                    behavior_norm_score = min(b.confidence / 150.0, 1.0)
+                    behavior_track = b.stable_id
+                    behavior_reason = "Concealment Behavior"
+                    has_behavior = True
+                    break
+                elif "fast" in b_type:
+                    if behavior_type == IncidentType.UNKNOWN:
+                        behavior_type = IncidentType.FAST_MOVEMENT
+                        behavior_raw_score = b.confidence
+                        behavior_norm_score = min(b.confidence / 100.0, 1.0)
+                        behavior_track = b.stable_id
+                        behavior_reason = "Fast Movement"
+                        has_behavior = True
+
+        # Combine severity logic
+        severity = "UNKNOWN"
+        snapshot_required = False
+        snapshot_reason = ""
+        
+        if has_contraband and has_behavior:
+            severity = "CRITICAL"
+            incident_type = contraband_type  # Priority to contraband type
+            raw_score = contraband_score
+            normalized_score = contraband_score
+            subject_track_id = contraband_track
+            snapshot_required = True
+            snapshot_reason = f"{contraband_reason} + {behavior_reason}"
+        elif has_behavior:
+            severity = "HIGH"
+            incident_type = behavior_type
+            raw_score = behavior_raw_score
+            normalized_score = behavior_norm_score
+            subject_track_id = behavior_track
+            snapshot_required = True
+            snapshot_reason = behavior_reason
+        elif has_contraband:
+            severity = "MEDIUM"
+            incident_type = contraband_type
+            raw_score = contraband_score
+            normalized_score = contraband_score
+            subject_track_id = contraband_track
+            snapshot_required = True
+            snapshot_reason = contraband_reason
+        else:
+            raw_score = 0.0
+            normalized_score = 0.0
+            subject_track_id = -1
+            
         if subject_track_id == "":
             subject_track_id = -1
 
         incident_id = f"{session_id}_f{current_frame}"
         snapshot_filename = f"{incident_id}.jpg" if snapshot_required else ""
         
+        base_notes = " | ".join(packet.alerts)
+        notes = f"Severity: {severity} | {base_notes}" if base_notes else f"Severity: {severity}"
+
         return IncidentRecord(
             incident_id=incident_id,
             incident_type=incident_type,
@@ -155,7 +199,8 @@ class DecisionEngine:
             snapshot_reason=snapshot_reason,
             snapshot_filename=snapshot_filename,
             snapshot_result=SnapshotResult.PENDING,
-            notes=" | ".join(packet.alerts)
+            notes=notes,
+            severity=severity
         )
 
 # Global Decision Engine Singleton

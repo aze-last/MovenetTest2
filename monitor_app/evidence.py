@@ -79,6 +79,7 @@ class IncidentRecord:
     snapshot_filename: str
     snapshot_result: SnapshotResult
     notes: str
+    severity: str = "UNKNOWN"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -94,7 +95,8 @@ class IncidentRecord:
             "snapshot_reason": self.snapshot_reason,
             "snapshot_filename": self.snapshot_filename,
             "snapshot_result": self.snapshot_result.value,
-            "notes": self.notes
+            "notes": self.notes,
+            "severity": getattr(self, "severity", "UNKNOWN")
         }
 
 

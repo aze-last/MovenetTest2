@@ -1,5 +1,4 @@
 import cv2
-import numpy as np
 import os
 import time
 import threading
@@ -124,6 +123,7 @@ class MotionOptimizedEngine:
         self.stats = {"total": 0, "ai_runs": 0, "skipped": 0}
         self.trackers = {}
         self.yolo_trackers = {}
+        self.yolo_hysteresis = {}  # cam_id -> {cls_id: {"conf": float, "box": list, "ttl": int}}
         self.last_run = {}  # For throttling
 
         custom_vals = kwargs.get("custom_values")
@@ -137,20 +137,20 @@ class MotionOptimizedEngine:
 
     def _set_logic_sensitivity(self, level, custom_values=None):
         if level == "high":
-            self.CONF_THR = 0.25
-            self.AGG_THR = 450.0  # pixels/sec
-            self.ACTIVE_THR = 140.0
-            self.ALERT_FRAMES = 2
+            self.CONF_THR = 0.28
+            self.AGG_THR = 0.08  # Normalized (8% of frame width/sec)
+            self.ACTIVE_THR = 0.04
+            self.ALERT_FRAMES = 4
             self.motion_threshold = 4500
             self.motion_ratio = 0.009
             self.yolo_knife_conf = 0.30
             self.yolo_cell_conf = 0.30
             self.yolo_fallback_conf = 0.50
         elif level == "low":
-            self.CONF_THR = 0.18
-            self.AGG_THR = 700.0
-            self.ACTIVE_THR = 250.0
-            self.ALERT_FRAMES = 5
+            self.CONF_THR = 0.38
+            self.AGG_THR = 0.15
+            self.ACTIVE_THR = 0.08
+            self.ALERT_FRAMES = 8
             self.motion_threshold = 6000
             self.motion_ratio = 0.012
             self.yolo_knife_conf = 0.40
@@ -158,8 +158,8 @@ class MotionOptimizedEngine:
             self.yolo_fallback_conf = 0.60
         elif level == "custom" and custom_values:
             self.CONF_THR = float(custom_values.get("conf_thr", 0.22))
-            self.AGG_THR = float(custom_values.get("agg_thr", 180.0))
-            self.ACTIVE_THR = float(custom_values.get("active_thr", 90.0))
+            self.AGG_THR = float(custom_values.get("agg_thr", 0.10))
+            self.ACTIVE_THR = float(custom_values.get("active_thr", 0.05))
             self.ALERT_FRAMES = int(custom_values.get("alert_frames", 3))
             self.motion_threshold = int(custom_values.get("motion_threshold", 5000))
             self.motion_ratio = float(custom_values.get("motion_ratio", 0.010))
@@ -167,10 +167,10 @@ class MotionOptimizedEngine:
             self.yolo_cell_conf = float(custom_values.get("yolo_cell_conf", 0.30))
             self.yolo_fallback_conf = float(custom_values.get("yolo_fallback_conf", 0.50))
         else:  # medium (default)
-            self.CONF_THR = 0.22
-            self.AGG_THR = 180.0
-            self.ACTIVE_THR = 90.0
-            self.ALERT_FRAMES = 3
+            self.CONF_THR = 0.32
+            self.AGG_THR = 0.10
+            self.ACTIVE_THR = 0.05
+            self.ALERT_FRAMES = 6
             self.motion_threshold = 5000
             self.motion_ratio = 0.010
             self.yolo_knife_conf = 0.30
@@ -293,12 +293,22 @@ class MotionOptimizedEngine:
         self.last_gray[camera_id] = gray
         return score > adaptive_threshold, score
 
-    def process_frame(self, frame, camera_id="0", frame_uuid=None):
-        """Main AI pipeline called by the UI."""
+    def process_frame(self, frame, camera_id="0", frame_uuid=None, motion_pre_detected=None):
+        """Main AI pipeline called by the inference queue.
+        
+        Args:
+            motion_pre_detected: If not None, skip redundant motion detection
+                                and use this value directly (already computed by LocalMotionGater).
+        """
         with self.lock:
             self.stats["total"] += 1
 
-        is_moving, score = self.detect_motion(frame, camera_id)
+        # Use pre-computed motion if available, otherwise compute
+        if motion_pre_detected is not None:
+            is_moving = motion_pre_detected
+            score = 0  # score not needed when pre-detected
+        else:
+            is_moving, score = self.detect_motion(frame, camera_id)
 
         res = {
             "frame": frame, "motion_detected": is_moving, "motion_score": score,
@@ -317,15 +327,7 @@ class MotionOptimizedEngine:
         if not run_movenet and not run_yolo:
             with self.lock:
                 self.stats["skipped"] += 1
-            # Return original frame to save memory
             return res
-
-        # Throttling to save laptop heat (max 18 FPS AI)
-        now = time.time()
-        if now - self.last_run.get(camera_id, 0) < 0.05:
-            res["processing_mode"] = "AI Running (Throttled)"
-            return res
-        self.last_run[camera_id] = now
 
         # Get active telemetry context
         ctx = None
@@ -333,8 +335,7 @@ class MotionOptimizedEngine:
             from monitor_app.telemetry import get_telemetry_engine
             ctx = get_telemetry_engine().get_context(frame_uuid)
 
-        # --- FULL AI MODE ---
-        res["frame"] = frame.copy()
+        # --- FULL AI MODE (no throttle — queue provides natural backpressure) ---
         mode_str = "AI ACTIVE (RTX GPU Enabled)"
         if not is_moving:
             mode_str = "AI ACTIVE (Ungated Override)"
@@ -357,7 +358,7 @@ class MotionOptimizedEngine:
             if ctx:
                 ctx.mark("movenet_end")
 
-        # 2. Contraband Analysis (Dual YOLO)
+        # 2. Contraband Analysis (YOLO)
         if self.enable_yolo and self.yolo_custom and run_yolo:
             if ctx:
                 ctx.mark("yolo_start")
@@ -368,6 +369,31 @@ class MotionOptimizedEngine:
 
         # Draw Global HUD
         cv2.putText(res["frame"], res["processing_mode"], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        return res
+
+    def run_movenet_only(self, frame, camera_id="0"):
+        """Run only MoveNet inference (CPU-bound). Thread-safe.
+        Returns partial result dict with behavior detections."""
+        res = {
+            "frame": frame, "num_people": 0, "alert_triggered": False,
+            "alerts": [], "detections": {"behavior": [], "contraband": []},
+            "tracked_persons": [],
+        }
+        if self.movenet:
+            with self.tf_inference_lock:
+                self._run_movenet_logic(res, camera_id)
+        return res
+
+    def run_yolo_only(self, frame, camera_id="0"):
+        """Run only YOLO inference (GPU-bound). Thread-safe.
+        Returns partial result dict with contraband detections."""
+        res = {
+            "frame": frame, "num_people": 0, "alert_triggered": False,
+            "alerts": [], "detections": {"behavior": [], "contraband": []},
+        }
+        if self.enable_yolo and self.yolo_custom:
+            with self.yolo_inference_lock:
+                self._run_yolo_logic(res, camera_id)
         return res
 
 
@@ -411,49 +437,109 @@ class MotionOptimizedEngine:
             outputs = self.movenet(tensor)
             kpts = outputs["output_0"].numpy()[0]
             
-            detected_people = []
-
+            raw_detected = []
             for i in range(6):  # Max 6 people
                 person = kpts[i, :51].reshape(17, 3)
                 conf = np.mean(person[:, 2])
-                if conf > 0.2:
-                    hip_l, hip_r = person[11], person[12]
-                    hip_centroid = ((hip_l[1] + hip_r[1]) / 2, (hip_l[0] + hip_r[0]) / 2)
+                if conf > self.CONF_THR:
+                    # Structural validity: require minimum keypoints AND core body visibility
+                    valid_kps = [kp for kp in person if kp[2] > 0.25]
+                    n_valid = len(valid_kps)
+                    has_shoulders = person[5, 2] > 0.25 and person[6, 2] > 0.25
+                    has_hips = person[11, 2] > 0.25 and person[12, 2] > 0.25
                     
-                    res["num_people"] += 1
-                    self.draw_skeleton(res["frame"], person, i)
-                    label, score = self.classify_behavior(person, i, cam_id, res["frame"].shape)
+                    # Ghost filter: need at least 5 valid keypoints AND at least one body pair
+                    if n_valid < 5 or (not has_shoulders and not has_hips):
+                        continue
 
-                    detected_people.append({
-                        "p_id": i,
-                        "hip_centroid": hip_centroid,
-                        "kps": person,
-                        "label": label,
-                        "score": score
-                    })
+                    # Robust centroid calculation to prevent ID swaps due to occluded hips
+                    if has_hips:
+                        hip_centroid = ((person[11, 1] + person[12, 1]) / 2, (person[11, 0] + person[12, 0]) / 2)
+                    elif has_shoulders:
+                        hip_centroid = ((person[5, 1] + person[6, 1]) / 2, (person[5, 0] + person[6, 0]) / 2)
+                    else:
+                        xs = [kp[1] for kp in valid_kps]
+                        ys = [kp[0] for kp in valid_kps]
+                        hip_centroid = (float(np.mean(xs)), float(np.mean(ys)))
 
-                    tracked_person = TrackedPerson(
-                        stable_id=-1,
-                        raw_person_id=i,
-                        camera_id=cam_id,
-                        keypoints=person,
-                        bbox=None,
-                        hip_centroid=hip_centroid,
-                        confidence=float(conf),
-                        frame_number=self.stats["total"],
-                        timestamp=time.time(),
-                    )
-                    res.setdefault("tracked_persons", []).append(tracked_person)
+                    raw_detected.append((person, i, hip_centroid, conf))
 
-                    if label in ("Aggressive / Fighting", "Fast Movement"):
-                        res["alert_triggered"] = True
-                        res["alerts"].append(f"Person {i + 1}: {label.upper()}")
-                        CapstoneDebug.log(cam_id, f"ALERT: Fast/Aggressive motion detected for Person {i + 1}")
+            # NMS: suppress duplicate detections of the same person (split detections)
+            # If two detections have centroids within 15% of frame width, keep the higher-confidence one
+            nms_threshold = 0.15  # in normalized [0,1] space
+            suppressed = set()
+            for i_det in range(len(raw_detected)):
+                if i_det in suppressed:
+                    continue
+                for j_det in range(i_det + 1, len(raw_detected)):
+                    if j_det in suppressed:
+                        continue
+                    cx_i, cy_i = raw_detected[i_det][2]
+                    cx_j, cy_j = raw_detected[j_det][2]
+                    dist = ((cx_i - cx_j) ** 2 + (cy_i - cy_j) ** 2) ** 0.5
+                    if dist < nms_threshold:
+                        # Suppress the lower-confidence detection
+                        if raw_detected[i_det][3] >= raw_detected[j_det][3]:
+                            suppressed.add(j_det)
+                        else:
+                            suppressed.add(i_det)
+                            break  # i_det is suppressed, no need to check further
+
+            raw_detected = [d for idx, d in enumerate(raw_detected) if idx not in suppressed]
+
+            # Resolve stable IDs using the global behavior engine's tracker to stay in sync
+            from monitor_app.behaviors import get_behavior_engine
+            tracker = get_behavior_engine()._get_tracker(cam_id)
+            
+            tracked_list = []
+            for person, raw_id, hip_centroid, conf in raw_detected:
+                tp = TrackedPerson(
+                    stable_id=-1,
+                    raw_person_id=raw_id,
+                    camera_id=cam_id,
+                    keypoints=person,
+                    bbox=None,
+                    hip_centroid=hip_centroid,
+                    confidence=float(conf),
+                    frame_number=self.stats["total"],
+                    timestamp=time.time(),
+                )
+                tracked_list.append(tp)
+
+            if tracked_list:
+                tracker.update(tracked_list, self.stats["total"])
+
+            detected_people = []
+            for tp in tracked_list:
+                person = tp.keypoints
+                stable_id = tp.stable_id
+                raw_id = tp.raw_person_id
+                
+                res["num_people"] += 1
+                self.draw_skeleton(res["frame"], person, stable_id)
+                label, score = self.classify_behavior(person, stable_id, cam_id, res["frame"].shape)
+
+                detected_people.append({
+                    "p_id": raw_id,
+                    "stable_id": stable_id,
+                    "hip_centroid": tp.hip_centroid,
+                    "kps": person,
+                    "label": label,
+                    "score": score
+                })
+                
+                res.setdefault("tracked_persons", []).append(tp)
+
+                if label in ("Aggressive / Fighting", "Fast Movement"):
+                    res["alert_triggered"] = True
+                    res["alerts"].append(f"Person {stable_id + 1}: {label.upper()}")
+                    CapstoneDebug.log(cam_id, f"ALERT: Fast/Aggressive motion detected for Person {stable_id + 1}")
+
             res.setdefault("detections", {"behavior": [], "contraband": []})
             for dp in detected_people:
                 res["detections"]["behavior"].append({
                     "person_index": dp["p_id"],
-                    "stable_id": -1,
+                    "stable_id": dp["stable_id"],
                     "label": dp["label"],
                     "score": dp["score"]
                 })
@@ -463,40 +549,22 @@ class MotionOptimizedEngine:
 
     def _run_yolo_logic(self, res, cam_id):
         """
-        REFACTORED YOLO LOGIC with Official ByteTrack integration.
-        - Run custom YOLO model.
-        - Feed detections into camera-specific BYTETracker.
-        - Draw bounding boxes with stable Track IDs.
+        YOLO LOGIC with ByteTrack.
+        - Run custom YOLO model with tracking enabled.
+        - Extract boxes and tracking IDs directly.
         """
         device = self.yolo_device  # Cached at __init__ via _setup_hardware()
         detections_found = []
 
         if self.yolo_custom:
             try:
-                # Initialize tracker for camera if not present
-                if cam_id not in self.yolo_trackers:
-                    from ultralytics.utils import IterableSimpleNamespace
-                    from ultralytics.trackers.byte_tracker import BYTETracker
-                    from monitor_app.tracker_config import TRACKER_CFG
-                    args = IterableSimpleNamespace(
-                        track_thresh=TRACKER_CFG.get("track_thresh", 0.5),
-                        track_buffer=TRACKER_CFG.get("track_buffer", 30),
-                        match_thresh=TRACKER_CFG.get("match_thresh", 0.8),
-                        frame_rate=TRACKER_CFG.get("frame_rate", 15),
-                        track_high_thresh=TRACKER_CFG.get("track_thresh", 0.5),
-                        track_low_thresh=0.1,
-                        new_track_thresh=TRACKER_CFG.get("track_thresh", 0.5) + 0.1,
-                        fuse_score=False
-                    )
-                    self.yolo_trackers[cam_id] = BYTETracker(args)
-
                 from monitor_app.config import get_config
                 inference_imgsz = get_config("yolo", "inference_imgsz", 960)
                 
                 try:
-                    results = self.yolo_custom(res["frame"], verbose=False, imgsz=inference_imgsz, device=device)
+                    results = self.yolo_custom.track(res["frame"], persist=True, verbose=False, imgsz=inference_imgsz, device=device)
                 except Exception as e:
-                    print(f"[YOLO] CRITICAL: inference failed on active model '{getattr(self, 'active_model_name', 'unknown')}': {e}")
+                    print(f"[YOLO] CRITICAL: tracking failed on active model '{getattr(self, 'active_model_name', 'unknown')}': {e}")
                     print("[YOLO] Attempting emergency fallback to best.pt for this session...")
                     import os
                     model_dir = os.path.join(os.path.dirname(__file__), "models")
@@ -504,7 +572,7 @@ class MotionOptimizedEngine:
                     if os.path.exists(fallback_path):
                         self.yolo_custom = YOLO(fallback_path)
                         self.active_model_name = "best.pt (emergency fallback)"
-                        results = self.yolo_custom(res["frame"], verbose=False, imgsz=inference_imgsz, device=device)
+                        results = self.yolo_custom.track(res["frame"], persist=True, verbose=False, imgsz=inference_imgsz, device=device)
                     else:
                         results = []
 
@@ -516,27 +584,35 @@ class MotionOptimizedEngine:
                 fallback_thr = getattr(self, "yolo_fallback_conf", 0.50)
 
                 for r in results:
-                    if r.boxes is not None and len(r.boxes) > 0:
-                        print(f"[YOLO raw] confs: {r.boxes.conf.tolist()}, classes: {r.boxes.cls.tolist()}")
-                    
-                    # Update ByteTrack with YOLO Boxes
-                    tracks = self.yolo_trackers[cam_id].update(r.boxes.cpu(), res["frame"])
-                    if len(tracks) > 0:
-                        print(f"[BYTETrack Cam {cam_id}] Updated with {len(tracks)} active tracks.")
-                    
-                    if len(tracks) > 0:
-                        from monitor_app.central_inference import get_inference_manager
-                        mgr = get_inference_manager()
-                        if mgr:
-                            mgr.update_active_track_time(cam_id)
+                    if r.boxes is None or len(r.boxes) == 0:
+                        continue
+                        
+                    # Update active track time to keep motion gate open if detections exist
+                    from monitor_app.central_inference import get_inference_manager
+                    mgr = get_inference_manager()
+                    if mgr:
+                        mgr.update_active_track_time(cam_id)
 
-                    for track in tracks:
-                        x1, y1, x2, y2, track_id, conf, cls_id, idx = track
-                        cls_id = int(cls_id)
-                        conf = float(conf)
-                        track_id = int(track_id)
+                    current_det_classes = set()
+                    for box in r.boxes:
+                        conf = float(box.conf[0])
+                        cls_id = int(box.cls[0])
+                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                        track_id = int(box.id[0]) if box.id is not None else -1
 
                         if cls_id in CLASS_NAMES and conf > CONF_THRESHOLDS.get(cls_id, fallback_thr):
+                            current_det_classes.add(cls_id)
+                            
+                            # Update hysteresis cache
+                            if cam_id not in self.yolo_hysteresis:
+                                self.yolo_hysteresis[cam_id] = {}
+                            self.yolo_hysteresis[cam_id][cls_id] = {
+                                "conf": conf,
+                                "box": [x1, y1, x2, y2],
+                                "track_id": track_id,
+                                "ttl": 5  # Persist for 5 frames
+                            }
+
                             detections_found.append({
                                 "name": CLASS_NAMES[cls_id],
                                 "conf": conf,
@@ -544,8 +620,25 @@ class MotionOptimizedEngine:
                                 "track_id": track_id,
                                 "source": "combined"
                             })
+                            
+                    # Apply hysteresis for missing detections
+                    if cam_id in self.yolo_hysteresis:
+                        for cls_id in list(self.yolo_hysteresis[cam_id].keys()):
+                            if cls_id not in current_det_classes:
+                                data = self.yolo_hysteresis[cam_id][cls_id]
+                                data["ttl"] -= 1
+                                if data["ttl"] <= 0:
+                                    del self.yolo_hysteresis[cam_id][cls_id]
+                                else:
+                                    detections_found.append({
+                                        "name": CLASS_NAMES[cls_id],
+                                        "conf": data["conf"],
+                                        "box": data["box"],
+                                        "track_id": data.get("track_id", -1),
+                                        "source": "combined_hysteresis"
+                                    })
             except Exception as e:
-                CapstoneDebug.log(cam_id, f"Combined YOLO Tracker Error: {e}")
+                CapstoneDebug.log(cam_id, f"Combined YOLO Error: {e}")
 
         # 3. Consolidate and Render
         res.setdefault("detections", {"behavior": [], "contraband": []})
@@ -574,26 +667,93 @@ class MotionOptimizedEngine:
     def classify_behavior(self, kps, p_id, cam_id, frame_shape):
         frame_h, frame_w = frame_shape[:2]
         key = f"{cam_id}_{p_id}"
-        scaled = kps[:, :2] * np.array([frame_h, frame_w])
+        coords = kps[:, :2] * np.array([frame_h, frame_w])
+        confs = kps[:, 2]
+
         if key not in self.trackers:
-            self.trackers[key] = {'prev': scaled, 'history': [], 'time': time.time()}
+            self.trackers[key] = {
+                'prev_coords': coords,
+                'prev_confs': confs,
+                'smoothed_coords': coords.copy(),
+                'history': [],
+                'alert_count': 0,
+                'time': time.time()
+            }
             return "Normal", 0.0
 
         tracker = self.trackers[key]
         dt = time.time() - tracker['time']
         if dt < 0.01: return "Normal", 0.0
 
-        speed = np.linalg.norm(scaled[[7, 8, 9, 10]] - tracker['prev'][[7, 8, 9, 10]], axis=1).mean() / dt
-        tracker['prev'] = scaled
+        # Reset tracker if gap is too large to prevent velocity spikes from tracking gaps/reappearance
+        if dt > 0.15:
+            tracker['prev_coords'] = coords
+            tracker['prev_confs'] = confs
+            tracker['smoothed_coords'] = coords.copy()
+            tracker['time'] = time.time()
+            tracker['alert_count'] = 0
+            tracker['history'] = []
+            return "Normal", 0.0
+
+        # Apply EMA coordinate smoothing to filter keypoint jitter
+        alpha = 0.4
+        for idx in range(len(coords)):
+            if confs[idx] > 0.25:
+                tracker['smoothed_coords'][idx] = (
+                    alpha * coords[idx] + (1 - alpha) * tracker['smoothed_coords'][idx]
+                )
+        coords = tracker['smoothed_coords']
+
+        def _joint_speed(indices):
+            speeds = []
+            for idx in indices:
+                if confs[idx] > 0.25 and tracker['prev_confs'].shape[0] > idx and tracker['prev_confs'][idx] > 0.25:
+                    dist = np.linalg.norm(coords[idx] - tracker['prev_coords'][idx])
+                    # Deadband (soft threshold) of 0.4% frame width (~7.6px for 1080p) to suppress jitter
+                    dist_clean = max(0.0, dist - 0.004 * frame_w)
+                    speeds.append(dist_clean / dt)
+            return np.mean(speeds) if speeds else None
+
+        # PRIMARY: torso speed (shoulders 5,6 + hips 11,12) = body translation
+        torso_speed = _joint_speed([5, 6, 11, 12])
+        # SECONDARY: limb speed (elbows 7,8 + wrists 9,10) = arm motion
+        limb_speed = _joint_speed([7, 8, 9, 10])
+
+        if torso_speed is not None:
+            body_speed = torso_speed / frame_w  # Normalize by frame width
+        else:
+            body_speed = 0.0
+
+        # Limb excess: how much faster are limbs moving vs body translation?
+        if limb_speed is not None and torso_speed is not None and torso_speed > 0:
+            limb_excess = (limb_speed - torso_speed) / frame_w
+        elif limb_speed is not None:
+            limb_excess = limb_speed / frame_w
+        else:
+            limb_excess = 0.0
+
+        # Combined metric: body speed + weighted limb excess
+        aggression_score = body_speed + max(0.0, limb_excess) * 0.5
+
+        tracker['prev_coords'] = coords.copy()
+        tracker['prev_confs'] = confs
         tracker['time'] = time.time()
 
-        tracker['history'].append(speed)
-        if len(tracker['history']) > 5: tracker['history'].pop(0)
+        tracker['history'].append(aggression_score)
+        if len(tracker['history']) > 8: tracker['history'].pop(0)
         avg = np.mean(tracker['history'])
 
+        # Consecutive-frame gate: require ALERT_FRAMES sustained readings before escalating
+        if avg > self.ACTIVE_THR:
+            tracker['alert_count'] = tracker.get('alert_count', 0) + 1
+        else:
+            tracker['alert_count'] = 0
+
+        if tracker['alert_count'] < self.ALERT_FRAMES:
+            return "Normal", avg
+
         if avg > self.AGG_THR: return "Aggressive / Fighting", avg
-        if avg > self.ACTIVE_THR: return "Fast Movement", avg
-        return "Normal", avg
+        return "Fast Movement", avg
 
     def draw_skeleton(self, frame, kps, p_id):
         h, w = frame.shape[:2]

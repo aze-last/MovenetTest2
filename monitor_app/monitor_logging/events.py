@@ -1,8 +1,10 @@
+import time
 from monitor_app.monitor_logging.logger import get_module_logger
 
 logger = get_module_logger("Events")
 
 class SystemEvents:
+    _last_overflow_log_time = {}
     @staticmethod
     def camera_connected(camera_id: str, name: str):
         logger.info(f"Camera CONNECTED | Name: {name}", camera_id=camera_id)
@@ -85,7 +87,11 @@ class SystemEvents:
 
     @staticmethod
     def queue_overflow(camera_id: str, queue_size: int):
-        logger.warning(f"Queue Overflow (Backpressure) | Queue Size: {queue_size}", camera_id=camera_id)
+        now = time.time()
+        last_time = SystemEvents._last_overflow_log_time.get(camera_id, 0.0)
+        if now - last_time >= 5.0:
+            logger.warning(f"Queue Overflow (Backpressure) | Queue Size: {queue_size}", camera_id=camera_id)
+            SystemEvents._last_overflow_log_time[camera_id] = now
 
     @staticmethod
     def inference_timeout(camera_id: str, duration: float):

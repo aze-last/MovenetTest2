@@ -3,6 +3,7 @@ import sqlite3
 import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, ttk
+import shutil
 
 import customtkinter as ctk
 import cv2
@@ -558,6 +559,19 @@ class IncidentReviewDetail(ctk.CTkFrame):
             command=lambda: self.update_status("NEEDS REVIEW"),
         ).grid(row=1, column=0, columnspan=2, sticky="ew")
 
+        self.btn_extract = ctk.CTkButton(
+            actions,
+            text="Extract to Dataset",
+            height=38,
+            corner_radius=12,
+            fg_color=PALETTE["warning"],
+            hover_color="#b88f4b",
+            text_color=PALETTE["text"],
+            font=("Segoe UI Semibold", 12),
+            command=self.extract_to_dataset,
+        )
+        self.btn_extract.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
         self.feedback_label = ctk.CTkLabel(
             validation_wrap,
             text="No incident selected.",
@@ -788,6 +802,54 @@ class IncidentReviewDetail(ctk.CTkFrame):
             return parsed.strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
             return raw_timestamp
+
+    def extract_to_dataset(self):
+        if not self.current_incident:
+            messagebox.showerror("Error", "No incident selected.")
+            return
+        
+        status = (self.current_incident.get("review_status") or "PENDING").upper()
+        if status != "CONFIRMED":
+            messagebox.showinfo("Extraction Restricted", "Only CONFIRMED incidents can be extracted to the dataset.")
+            return
+
+        video_path = self.current_incident.get("video_path")
+        if not video_path or not os.path.exists(video_path):
+            messagebox.showerror("Error", "Video file not found.")
+            return
+
+        event_type = self.current_incident.get("event_type", "unknown").replace(" ", "_")
+        event_id = self.current_incident.get("event_id", "incident")
+
+        # Create target directories
+        dataset_base = os.path.join(os.path.dirname(self.db_path), "DatasetRecordings")
+        target_dir = os.path.join(dataset_base, event_type)
+        os.makedirs(target_dir, exist_ok=True)
+
+        # Copy video
+        target_vid = os.path.join(target_dir, f"{event_id}.mp4")
+        try:
+            shutil.copy2(video_path, target_vid)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to copy video: {e}")
+            return
+
+        # Extract frame
+        target_img = os.path.join(target_dir, f"{event_id}_frame.jpg")
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if cap.isOpened():
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                mid_frame = max(0, total_frames // 2)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, mid_frame)
+                ret, frame = cap.read()
+                if ret:
+                    cv2.imwrite(target_img, frame)
+                cap.release()
+        except Exception as e:
+            print(f"Frame extraction failed: {e}")
+            
+        messagebox.showinfo("Extraction Complete", f"Saved to DatasetRecordings/{event_type}\n- {event_id}.mp4\n- {event_id}_frame.jpg")
 
 
 class IncidentLogTable(ctk.CTkFrame):
