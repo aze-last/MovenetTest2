@@ -8,6 +8,8 @@
 ## Dont remove any code, if you need to remove a line/code make sure to make a documentation about it and its purpose.
 ## Also bundle everything inside this zip folder C:\Users\ASUS\PycharmProjects\MovenetTutorial\changes_today.zip but only the changes that you did today
 
+## always use skill for rules and optimizations /systematic-debugging, /python-pro, /ml-engineer, /computer-vision-expert
+
 Version: 2.0
 Project Type: Undergraduate Capstone (Production-Oriented Research Prototype)
 

@@ -1,5 +1,6 @@
 import cv2
 import os
+import numpy as np
 import time
 import threading
 from collections import deque
@@ -593,7 +594,7 @@ class MotionOptimizedEngine:
                     if mgr:
                         mgr.update_active_track_time(cam_id)
 
-                    current_det_classes = set()
+                    current_det_keys = set()
                     for box in r.boxes:
                         conf = float(box.conf[0])
                         cls_id = int(box.cls[0])
@@ -601,15 +602,19 @@ class MotionOptimizedEngine:
                         track_id = int(box.id[0]) if box.id is not None else -1
 
                         if cls_id in CLASS_NAMES and conf > CONF_THRESHOLDS.get(cls_id, fallback_thr):
-                            current_det_classes.add(cls_id)
+                            # Generate unique key to prevent overwrite collisions
+                            cache_key = track_id if track_id != -1 else f"untracked_{cls_id}_{x1}_{y1}"
+                            current_det_keys.add(cache_key)
                             
                             # Update hysteresis cache
                             if cam_id not in self.yolo_hysteresis:
                                 self.yolo_hysteresis[cam_id] = {}
-                            self.yolo_hysteresis[cam_id][cls_id] = {
+                            
+                            self.yolo_hysteresis[cam_id][cache_key] = {
                                 "conf": conf,
                                 "box": [x1, y1, x2, y2],
                                 "track_id": track_id,
+                                "cls_id": cls_id,
                                 "ttl": 5  # Persist for 5 frames
                             }
 
@@ -623,36 +628,30 @@ class MotionOptimizedEngine:
                             
                     # Apply hysteresis for missing detections
                     if cam_id in self.yolo_hysteresis:
-                        for cls_id in list(self.yolo_hysteresis[cam_id].keys()):
-                            if cls_id not in current_det_classes:
-                                data = self.yolo_hysteresis[cam_id][cls_id]
+                        for key in list(self.yolo_hysteresis[cam_id].keys()):
+                            if key not in current_det_keys:
+                                data = self.yolo_hysteresis[cam_id][key]
                                 data["ttl"] -= 1
                                 if data["ttl"] <= 0:
-                                    del self.yolo_hysteresis[cam_id][cls_id]
+                                    del self.yolo_hysteresis[cam_id][key]
                                 else:
                                     detections_found.append({
-                                        "name": CLASS_NAMES[cls_id],
+                                        "name": CLASS_NAMES[data["cls_id"]],
                                         "conf": data["conf"],
                                         "box": data["box"],
-                                        "track_id": data.get("track_id", -1),
+                                        "track_id": data["track_id"],
                                         "source": "combined_hysteresis"
                                     })
             except Exception as e:
                 CapstoneDebug.log(cam_id, f"Combined YOLO Error: {e}")
 
-        # 3. Consolidate and Render
+        # 3. Consolidate (No Rendering)
         res.setdefault("detections", {"behavior": [], "contraband": []})
         for det in detections_found:
             x1, y1, x2, y2 = map(int, det["box"])
             name = det["name"]
             conf = det["conf"]
             track_id = det["track_id"]
-
-            # Label everything as ALERT with track ID for high urgency
-            label_text = f"ALERT: {name.upper()} (ID: {track_id})"
-            cv2.rectangle(res["frame"], (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.putText(res["frame"], label_text, (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
             res["alert_triggered"] = True
             res["alerts"].append(f"CONTRABAND: {name} (ID: {track_id})")

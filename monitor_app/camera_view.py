@@ -796,19 +796,10 @@ class CameraFeedWidget(ttk.Frame):
                         except Exception as e:
                             print(f"Async callback error (Cam {_cam_self.camera_id}): {e}")
                     
-                    ai_frame_skip_counter += 1
-                    N = 3  # Frame skip interval
-                    if ai_frame_skip_counter % N == 0:
-                        manager.submit_task_async(packet, callback=_on_inference_complete)
-                    else:
-                        # Skip AI, display raw frame directly to maintain live feed framerate
-                        rgb = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2RGB)
-                        if self.result_queue.full():
-                            try:
-                                self.result_queue.get_nowait()
-                            except queue.Empty:
-                                pass
-                        self.result_queue.put((rgb, False))
+                    # Submit every frame to the AI manager.
+                    # The manager handles internal throttling (yolo_skip, movenet_skip)
+                    # and correctly applies bounding boxes to non-inference frames.
+                    manager.submit_task_async(packet, callback=_on_inference_complete)
                     
                     # Benchmark Logging Hook
                     from monitor_app.utils import GlobalState

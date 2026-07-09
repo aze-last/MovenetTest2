@@ -33,6 +33,7 @@ class CentralInferenceManager:
         self.worker_thread: Optional[threading.Thread] = None
         self.engine = None
         self.lock = threading.Lock()
+        self.result_lock = threading.Lock()
         self.last_active_track_times = {}
         self.hysteresis_timeout = 3.0  # seconds
         self.inference_paused = False
@@ -46,8 +47,8 @@ class CentralInferenceManager:
         self.movenet_pending = {}
         
         # Performance tuning parameters
-        self.movenet_skip = 6
-        self.yolo_skip = 3
+        self.movenet_skip = 2
+        self.yolo_skip = 1
     def has_active_tracks(self, camera_id: str) -> bool:
         with self.lock:
             last_time = self.last_active_track_times.get(str(camera_id), 0.0)
@@ -137,7 +138,8 @@ class CentralInferenceManager:
             try:
                 ms = time.perf_counter()
                 res = self.engine.run_movenet_only(frm_copy, cid)
-                self.last_movenet_results[cid] = res
+                with self.result_lock:
+                    self.last_movenet_results[cid] = res
                 me = time.perf_counter()
                 print(f"[TIMING] MoveNet (CPU Async): {(me-ms)*1000.0:.1f} ms", flush=True)
             except Exception as e:
@@ -151,7 +153,8 @@ class CentralInferenceManager:
             try:
                 ys = time.perf_counter()
                 yolo_result = self.engine.run_yolo_only(frame, camera_id)
-                self.last_yolo_results[camera_id] = yolo_result
+                with self.result_lock:
+                    self.last_yolo_results[camera_id] = yolo_result
                 ye = time.perf_counter()
                 print(f"[TIMING] YOLO (GPU): {(ye-ys)*1000.0:.1f} ms", flush=True)
             except Exception as e:
@@ -170,9 +173,6 @@ class CentralInferenceManager:
         if has_movenet and self.movenet_pending.get(camera_id, False):
             has_movenet = False # Skip this frame for MoveNet if it's still running
         
-        movenet_result = self.last_movenet_results.get(camera_id, {})
-        yolo_result = self.last_yolo_results.get(camera_id, {})
-        
         if has_movenet:
             self.movenet_pending[camera_id] = True
             # We copy the frame so the array isn't mutated while waiting in executor
@@ -181,28 +181,41 @@ class CentralInferenceManager:
         if has_yolo:
             _yolo_worker()
             
-        # movenet_result is returned immediately (using previous cached result if available)
-            self.last_yolo_results[camera_id] = yolo_result
-        
         if movenet_error:
             logger.error(f"MoveNet parallel error: {movenet_error}", camera_id=camera_id)
         if yolo_error:
             logger.error(f"YOLO parallel error: {yolo_error}", camera_id=camera_id)
         
         # Merge results: MoveNet provides people/behavior, YOLO provides contraband
-        merged = {
-            "frame": frame,
-            "num_people": movenet_result.get("num_people", 0),
-            "alert_triggered": movenet_result.get("alert_triggered", False) or yolo_result.get("alert_triggered", False),
-            "alerts": movenet_result.get("alerts", []) + yolo_result.get("alerts", []),
-            "detections": {
-                "behavior": movenet_result.get("detections", {}).get("behavior", []),
-                "contraband": yolo_result.get("detections", {}).get("contraband", []),
-            },
-            "processing_mode": "AI ACTIVE (Parallel GPU+CPU)",
-            "tracked_persons": movenet_result.get("tracked_persons", []),
-        }
+        with self.result_lock:
+            movenet_result = self.last_movenet_results.get(camera_id, {})
+            yolo_result = self.last_yolo_results.get(camera_id, {})
+            
+            merged = {
+                "frame": frame,
+                "num_people": movenet_result.get("num_people", 0),
+                "alert_triggered": movenet_result.get("alert_triggered", False) or yolo_result.get("alert_triggered", False),
+                "alerts": movenet_result.get("alerts", []) + yolo_result.get("alerts", []),
+                "detections": {
+                    "behavior": movenet_result.get("detections", {}).get("behavior", []),
+                    "contraband": yolo_result.get("detections", {}).get("contraband", []),
+                },
+                "processing_mode": "AI ACTIVE (Parallel GPU+CPU)",
+                "tracked_persons": movenet_result.get("tracked_persons", []),
+            }
         
+        # --- PHASE 2 Render: Continuous Box Drawing ---
+        import cv2
+        for det in merged["detections"]["contraband"]:
+            name = det.get("name", "Unknown")
+            track_id = det.get("track_id", -1)
+            x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
+            
+            label_text = f"ALERT: {name.upper()} (ID: {track_id})"
+            cv2.rectangle(merged["frame"], (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.putText(merged["frame"], label_text, (x1, max(0, y1 - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
         return merged
 
     def _worker_loop(self):
@@ -283,12 +296,33 @@ class CentralInferenceManager:
                                     with self.engine.lock:
                                         self.engine.stats["total"] += 1
                                         self.engine.stats["skipped"] += 1
-                                    res = {
-                                        "frame": packet.frame,
-                                        "num_people": 0, "alert_triggered": False,
-                                        "alerts": [], "detections": {"behavior": [], "contraband": []},
-                                        "processing_mode": "Power Saving (No Motion)"
-                                    }
+                                        
+                                    with self.result_lock:
+                                        last_m = self.last_movenet_results.get(packet.camera_id, {})
+                                        last_y = self.last_yolo_results.get(packet.camera_id, {})
+                                        
+                                        res = {
+                                            "frame": packet.frame,
+                                            "num_people": last_m.get("num_people", 0),
+                                            "alert_triggered": last_m.get("alert_triggered", False) or last_y.get("alert_triggered", False),
+                                            "alerts": last_m.get("alerts", []) + last_y.get("alerts", []),
+                                            "detections": {
+                                                "behavior": last_m.get("detections", {}).get("behavior", []),
+                                                "contraband": last_y.get("detections", {}).get("contraband", []),
+                                            },
+                                            "processing_mode": "Power Saving (No Motion)",
+                                            "tracked_persons": last_m.get("tracked_persons", [])
+                                        }
+                                        
+                                        # Re-draw YOLO contraband boxes so they persist
+                                        import cv2
+                                        for det in res["detections"]["contraband"]:
+                                            name = det.get("name", "Unknown")
+                                            track_id = det.get("track_id", -1)
+                                            x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
+                                            cv2.rectangle(res["frame"], (x1, y1), (x2, y2), (0, 0, 255), 3)
+                                            cv2.putText(res["frame"], f"ALERT: {name.upper()} (ID: {track_id})", 
+                                                        (x1, max(0, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                             else:
                                 # Fallback: BasicMotionEngine or unknown engine type
                                 res = self.engine.process_frame(
@@ -369,6 +403,10 @@ class CentralInferenceManager:
                         from monitor_app.ai_engine import MotionOptimizedEngine
                         for p in packet.tracked_persons:
                             if p.keypoints is not None:
+                                # Restore MoveNet skeletal lines on the final frame
+                                if hasattr(self.engine, 'draw_skeleton'):
+                                    self.engine.draw_skeleton(packet.frame, p.keypoints, p.stable_id)
+                                    
                                 bbox = MotionOptimizedEngine.compute_bbox_from_keypoints(p.keypoints, packet.frame.shape)
                                 if bbox:
                                     p.bbox = bbox

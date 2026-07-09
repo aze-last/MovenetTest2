@@ -5,6 +5,7 @@ import sqlite3
 import json
 import re
 import threading
+import numpy as np
 from collections import deque
 from datetime import datetime
 import monitor_app.utils as utils
@@ -146,7 +147,9 @@ class IncidentRecorder:
         self.last_write_time = current_time
 
         # 2. ALWAYS BUFFER (Pre-roll persistence across all states)
-        self.pre_roll_buffer.append(bgr_frame.copy())
+        success, encoded = cv2.imencode('.jpg', bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if success:
+            self.pre_roll_buffer.append(encoded.tobytes())
 
         # 3. STATE MACHINE
         if self.state == self.RECORDING:
@@ -198,8 +201,11 @@ class IncidentRecorder:
 
         # Write Pre-roll (SNAPSHOT - do not drain buffer)
         snapshot = list(self.pre_roll_buffer)
-        for buf_frame in snapshot:
-            self.video_writer.write(buf_frame)
+        for buf_frame_bytes in snapshot:
+            np_arr = np.frombuffer(buf_frame_bytes, dtype=np.uint8)
+            decoded_frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if decoded_frame is not None:
+                self.video_writer.write(decoded_frame)
             
         self.current_timestamp_start = now.isoformat()
         self.confidence_scores = confidence_scores

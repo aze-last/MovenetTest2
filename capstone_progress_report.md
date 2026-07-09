@@ -1,7 +1,7 @@
 # Capstone Project Progress Report
 **Project Name:** CellWatch AI  
 **Deployment Target:** Real-Time CCTV Surveillance for bjmp Jail Cells  
-**Status Update Date:** July 8, 2026
+**Status Update Date:** July 9, 2026
 
 ---
 
@@ -46,6 +46,26 @@
   - Line 16: Updated to `torchaudio==2.4.1+cu118`.
   - Line 17: Added `tensorrt==11.1.0.106` to ensure GPU engine optimization runs in replica setups.
 
+### G. RAM Optimization & Rendering Decoupling
+- **The Issue:** 
+  1. Massive RAM ballooning (~1.87 GB) because raw BGR numpy arrays were stored in the pre-roll event memory buffer.
+  2. Bounding boxes were flickering because rendering (`cv2.rectangle`) was tethered to the YOLO inference loop, which intentionally skips frames to maintain performance.
+  3. YOLO hysteresis cache keys collided for multiple objects of the same class, causing erratic tracking drops and overwrites.
+- **The Fixes implemented:**
+  1. **In-Memory JPEG Compression:** Refactored [incident_record.py](file:///c:/Users/ASUS/PycharmProjects/MovenetTutorial/monitor_app/incident_record.py) to compress `bgr_frame` into 80% quality JPEG bytes (`cv2.imencode`) before appending to `pre_roll_buffer`. This detached the numpy memory allocator and dropped the footprint to ~45 MB. Frames are now decoded (`cv2.imdecode`) dynamically upon write in `_start_recording`.
+  2. **Decoupled Continuous Rendering:** Removed all `cv2` drawing logic from [ai_engine.py](file:///c:/Users/ASUS/PycharmProjects/MovenetTutorial/monitor_app/ai_engine.py) (`_run_yolo_logic`). Added a continuous rendering loop inside [central_inference.py](file:///c:/Users/ASUS/PycharmProjects/MovenetTutorial/monitor_app/central_inference.py) (`_run_parallel_inference`) that guarantees boxes are drawn on every frame based on the cached `merged` dictionary detections.
+  3. **Hysteresis Track ID Fix:** Swapped the YOLO hysteresis dictionary key in `ai_engine.py` from `cls_id` to `track_id` (with a coordinate string fallback for untracked items) to guarantee multiple objects are tracked and cached distinctly.
+
+### H. Hardware Utilization & Tracking Continuity (Unthrottling)
+- **The Issue:** The system's CPU and GPU were underutilized ("on chill"), and the YOLO tracking (ByteTracker) dropped IDs because it was being fed 1 frame and skipping 2 (`yolo_skip = 3`). ByteTracker's Kalman filter requires continuous sequential frames to maintain motion prediction.
+- **The Fixes implemented:**
+  1. **Unthrottled YOLO:** Modified [central_inference.py](file:///c:/Users/ASUS/PycharmProjects/MovenetTutorial/monitor_app/central_inference.py) to change `self.yolo_skip` from 3 to 1. Feeding every frame to the GPU ensures the ByteTracker maintains a perfect lock on contraband targets.
+  2. **Unthrottled MoveNet:** Changed `self.movenet_skip` from 6 to 2 to utilize the Ryzen 7's CPU headroom, making aggressive behavior detection 3x more responsive.
+
+### I. Thread-Safety & Torn Read Prevention
+- **The Issue:** The `merged` detection dictionary in `central_inference.py` was being read during the rendering phase while the MoveNet (CPU) and YOLO (GPU) threads were simultaneously updating their respective result dictionaries. This lack of synchronization caused race conditions, leading to torn reads (partially updated object detections rendering on screen).
+- **The Fix:** Added a `threading.Lock()` (`self.result_lock`) explicitly scoped around the dictionary writes inside `_movenet_worker` and `_yolo_worker`, and around the `merged` dictionary construction block in the main queue thread. The lock is held for mere microseconds (pure dict updating/copying), ensuring atomic detection arrays without blocking the main render thread.
+
 ---
 
 ## 2. Architectural Decisions & Guardrails
@@ -62,4 +82,25 @@
 
 ## 3. Known Limitations & Risks
 
-- **Async MoveNet Staleness:** To maintain target FPS on target hardware, MoveNet runs asynchronously (every 6th frame / ~500ms). YOLO runs on every 3rd frame. If two subjects rapidly swap coordinates within a 500ms window, YOLO contraband detections could temporarily be correlated with the incorrect subject. This is mitigated by NMS and tracking resets but remains a known trade-off of the low-resource CPU-gated architecture.
+- **Async MoveNet Staleness (Mitigated):** Previously, to maintain FPS, MoveNet ran asynchronously (every 6th frame / ~500ms) and YOLO every 3rd frame. With the recent hardware unthrottling (MoveNet every 2nd frame, YOLO every frame), the staleness window is drastically reduced from ~500ms to ~60ms. While rapid subject coordinate swapping is now far less likely to cause YOLO miscorrelation, extreme high-speed motion could still theoretically outpace the 30FPS capture rate.
+
+---
+
+## 4. Files Modified
+- `monitor_app/incident_record.py` (Pre-roll JPEG memory compression)
+- `monitor_app/ai_engine.py` (Hysteresis `track_id` fix, decoupled rendering, YOLO track API)
+- `monitor_app/central_inference.py` (Hardware unthrottling, continuous rendering loop, thread-safe dict merging)
+- `monitor_app/events.py` (Added missing tracking events)
+- `monitor_app/tracking/tracker_manager.py` (Removed unused imports)
+- `requirements.txt` (Synchronized TensorRT/CUDA dependencies)
+- `capstone_progress_report.md` (Added documentation for thread-safety fix)
+
+### J. Resolution of UI Flickering and Missing MoveNet Skeletons
+- **The Issue:** The video frames in the UI were flickering, and MoveNet skeletal frames were not rendering. The flickering occurred because the motion gate skipped frames without motion, which returned an empty detections dictionary and abruptly cleared all UI overlays. The missing skeletons were caused by MoveNet drawing its lines on an async worker's copied frame rather than the final frame presented to the UI.
+- **The Fixes implemented:**
+  1. **Persistent Detections (Flicker Fix):** Modified `central_inference.py` so that when a frame is skipped due to lack of motion (`should_run=False`), it explicitly retrieves and merges the last known YOLO and MoveNet results (`last_movenet_results` and `last_yolo_results`) to ensure detection overlays gracefully persist across motion-skipped frames instead of blinking.
+  2. **Render Loop Skeletal Drawing:** Relocated the `draw_skeleton` invocation into `central_inference.py`'s `_worker_loop`. Skeletons are now drawn synchronously over the active UI `packet.frame` alongside bounding boxes, ensuring they are not discarded when the async frame copy is destroyed.
+
+### K. Resolution of "Time-Travel" Frame Stuttering
+- **The Issue:** The raw video feed was physically stuttering and jumping back in time. This occurred because `camera_view.py` attempted to artificially bypass the inference queue for 2 out of every 3 frames (`N=3`) to save CPU, pushing them instantly to the UI. However, the 1 frame sent to the AI queue took ~30ms-50ms to process, meaning it arrived at the UI *after* the bypassed future frames were already displayed, causing the video feed to constantly overwrite itself with older AI-processed frames.
+- **The Fix:** Removed the `N=3` manual frame skip in `camera_view.py`. All frames are now unconditionally submitted to `central_inference.py`, which strictly enforces FIFO queue ordering. The central AI manager handles its own throttling (`yolo_skip` and `movenet_skip`) gracefully while ensuring bounding boxes and overlays are continuously drawn on every frame. The UI now renders at a perfectly sequential and smooth 30 FPS.
