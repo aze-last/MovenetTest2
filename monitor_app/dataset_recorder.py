@@ -28,6 +28,7 @@ try:
     def _load_config():
         cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
         if os.path.exists(cfg_path):
+            
             with open(cfg_path, "r") as f:
                 return yaml.safe_load(f) or {}
         return {}
@@ -127,7 +128,7 @@ class CameraWorker(threading.Thread):
             ret, frame = self.cap.read()
             if not ret:
                 self.dropped_frames += 1
-                time.sleep(0.005)
+                time.sleep(0.03)
                 continue
 
             self.frame_count += 1

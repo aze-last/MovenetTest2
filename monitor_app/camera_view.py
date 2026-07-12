@@ -162,17 +162,34 @@ class CameraManagementDialog(ctk.CTkToplevel):
         self.ip_var = tk.StringVar()
         self.port_var = tk.StringVar(value="554")
         self.path_var = tk.StringVar(value="/stream")
-        
+        self.user_var = tk.StringVar()
+        self.pass_var = tk.StringVar()
+
         ctk.CTkLabel(rtsp_frame, text="Advanced RTSP Configuration", font=("Segoe UI Semibold", 12), text_color=self.PALETTE["accent"]).pack(anchor="w")
-        
+
+        def _labeled_field(parent, label_text, variable, width, placeholder, show=""):
+            col = ctk.CTkFrame(parent, fg_color="transparent")
+            col.pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(col, text=label_text, font=("Segoe UI", 10), text_color=self.PALETTE["muted"]).pack(anchor="w")
+            ctk.CTkEntry(col, textvariable=variable, placeholder_text=placeholder, width=width, height=32, show=show).pack(anchor="w")
+
+        rtsp_creds = ctk.CTkFrame(rtsp_frame, fg_color="transparent")
+        rtsp_creds.pack(fill="x", pady=(5, 0))
+
+        _labeled_field(rtsp_creds, "Username", self.user_var, 210, "Camera account (NOT TP-Link login)")
+        _labeled_field(rtsp_creds, "Password", self.pass_var, 210, "Camera account password", show="•")
+
         rtsp_inputs = ctk.CTkFrame(rtsp_frame, fg_color="transparent")
         rtsp_inputs.pack(fill="x", pady=5)
-        
-        ctk.CTkEntry(rtsp_inputs, textvariable=self.ip_var, placeholder_text="IP Address (e.g. 192.168.1.100)", width=200, height=32).pack(side="left", padx=(0, 5))
-        ctk.CTkEntry(rtsp_inputs, textvariable=self.port_var, placeholder_text="Port (554)", width=80, height=32).pack(side="left", padx=5)
-        ctk.CTkEntry(rtsp_inputs, textvariable=self.path_var, placeholder_text="Path (/stream)", width=120, height=32).pack(side="left", padx=5)
-        
-        ctk.CTkButton(rtsp_inputs, text="Build URL", height=32, corner_radius=8, fg_color=self.PALETTE["border"], command=self._build_rtsp_url).pack(side="left", padx=5)
+
+        _labeled_field(rtsp_inputs, "IP Address", self.ip_var, 180, "192.168.1.100")
+        _labeled_field(rtsp_inputs, "Port", self.port_var, 70, "554")
+        _labeled_field(rtsp_inputs, "Path", self.path_var, 120, "/stream1")
+
+        btn_col = ctk.CTkFrame(rtsp_inputs, fg_color="transparent")
+        btn_col.pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(btn_col, text=" ", font=("Segoe UI", 10)).pack(anchor="w")
+        ctk.CTkButton(btn_col, text="Build URL", height=32, corner_radius=8, fg_color=self.PALETTE["border"], command=self._build_rtsp_url).pack(anchor="w")
 
         # Action Buttons
         btn_box = ctk.CTkFrame(inner_form, fg_color="transparent")
@@ -257,16 +274,29 @@ class CameraManagementDialog(ctk.CTkToplevel):
         self.ip_var.set("")
         self.port_var.set("554")
         self.path_var.set("/stream")
+        self.user_var.set("")
+        self.pass_var.set("")
         self.btn_save.configure(text="Add Camera")
         self.tree.selection_remove(self.tree.selection())
 
     def _build_rtsp_url(self):
+        from urllib.parse import quote
         ip = self.ip_var.get().strip()
         port = self.port_var.get().strip() or "554"
         path = self.path_var.get().strip()
+        user = self.user_var.get().strip()
+        pw = self.pass_var.get().strip()
         if not path.startswith("/"): path = "/" + path
         if ip:
-            url = f"rtsp://{ip}:{port}{path}"
+            # Embed credentials as rtsp://user:pass@host, URL-encoding reserved
+            # chars (e.g. '@' in an email username must become %40).
+            auth = ""
+            if user:
+                auth = quote(user, safe="")
+                if pw:
+                    auth += ":" + quote(pw, safe="")
+                auth += "@"
+            url = f"rtsp://{auth}{ip}:{port}{path}"
             vals = list(self.entry_src.cget("values"))
             if url not in vals:
                 vals.append(url)
@@ -554,6 +584,14 @@ class CameraFeedWidget(ttk.Frame):
         self.worker_thread = None
         self.last_frame_rgb = None
         self.ui_frame_interval_ms = 33  # ~30 FPS UI refresh
+        self.target_width = 320
+        self.target_height = 240
+        self.fallback_count = 0
+        
+        # Watchdog & Capture thread variables
+        self.is_reconnecting = False
+        self.frame_queue = queue.Queue(maxsize=1)
+        self.cap_thread = None
         
         # Incident detection & recording logic
         self.recorder = IncidentRecorder(self.camera_id)
@@ -628,18 +666,31 @@ class CameraFeedWidget(ttk.Frame):
     def _open_capture(self):
         """Open (or reopen) the video capture with fallback backends."""
         if self.cap:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
+            old_cap = self.cap
             self.cap = None
+            threading.Thread(target=lambda c: c.release(), args=(old_cap,), daemon=True).start()
+
+        if self.cap_thread and self.cap_thread.is_alive():
+            logger.info(f"Waiting for old capture thread of camera {self.camera_id} to exit...", camera_id=self.camera_id)
+            self.cap_thread.join(timeout=3.0)
+            self.cap_thread = None
 
         src = self.source
         # Try MSMF first (Windows default), then DirectShow fallback
-        backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY] if isinstance(src, int) else [cv2.CAP_ANY]
+        if isinstance(src, int):
+            backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
+        else:
+            backends = [cv2.CAP_FFMPEG, cv2.CAP_ANY]
         
         import os
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;5000"
+        if not isinstance(src, int):
+            # Low-latency RTSP: fflags;nobuffer + flags;low_delay drop FFmpeg's internal
+            # frame buffering (removes the ~2s startup/live delay). max_delay;500000 caps
+            # reorder buffering at 0.5s. stimeout;5000000 retained = 5s connection-hang
+            # protection (do not remove; documented fix in capstone_progress_report.md).
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;500000|stimeout;5000000"
+        else:
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "stimeout;5000000"
         
         for backend in backends:
             try:
@@ -650,9 +701,44 @@ class CameraFeedWidget(ttk.Frame):
                     if isinstance(src, int):
                         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    else:
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        
                     self.cap = cap
                     self._consecutive_failures = 0
-                    print(f"Camera {self.camera_id} opened on backend {backend}")
+                    
+                    actual_backend = cap.get(cv2.CAP_PROP_BACKEND)
+                    backend_name = "UNKNOWN"
+                    if actual_backend == cv2.CAP_FFMPEG:
+                        backend_name = "FFMPEG"
+                    elif actual_backend == cv2.CAP_MSMF:
+                        backend_name = "MSMF"
+                    elif actual_backend == cv2.CAP_DSHOW:
+                        backend_name = "DSHOW"
+                    else:
+                        backend_name = str(actual_backend)
+                        
+                    log_msg = f"Camera {self.camera_id} opened with backend: {backend_name}"
+                    if not isinstance(src, int) and backend_name != "FFMPEG":
+                        log_msg += " (fallback)"
+                        
+                    print(log_msg)
+                    logger.info(log_msg, camera_id=self.camera_id)
+                    
+                    # Clear any stale frames from queue
+                    while not self.frame_queue.empty():
+                        try:
+                            self.frame_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                            
+                    # Spawn capture thread
+                    self.cap_thread = threading.Thread(
+                        target=self._capture_thread_loop,
+                        args=(cap, self.frame_queue),
+                        daemon=True
+                    )
+                    self.cap_thread.start()
                     return
                 cap.release()
             except Exception as e:
@@ -666,6 +752,33 @@ class CameraFeedWidget(ttk.Frame):
             except Exception:
                 pass
         self.after(0, _set_offline)
+
+    def _capture_thread_loop(self, cap, q):
+        while self.running and self.cap == cap:
+            try:
+                ret, frame = cap.read()
+                if not self.running or self.cap != cap:
+                    break
+                
+                # Bounded queue put: drop oldest if full
+                while self.running and self.cap == cap:
+                    try:
+                        q.put_nowait((ret, frame))
+                        break
+                    except queue.Full:
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            pass
+                if not ret:
+                    break
+            except Exception as e:
+                print(f"Capture thread exception (Cam {self.camera_id}): {e}")
+                try:
+                    q.put_nowait((False, None))
+                except Exception:
+                    pass
+                break
 
     def _worker_loop(self):
         """Background thread for capturing and processing frames."""
@@ -699,15 +812,23 @@ class CameraFeedWidget(ttk.Frame):
                     reconnect_delay = min(reconnect_delay * factor, max_backoff)
                 continue
 
-            ret, raw_frame = self.cap.read()
-            if not ret:
+            try:
+                ret, raw_frame = self.frame_queue.get(timeout=2.5)
+                # Once we successfully retrieve a frame, we are no longer in reconnect status
+                self.is_reconnecting = False
+            except queue.Empty:
+                logger.warning(f"Camera {self.camera_id} read watchdog triggered (no frames for 2.5s). Stalling connection.", camera_id=self.camera_id)
+                ret = False
+                raw_frame = None
+
+            if not ret or raw_frame is None or getattr(raw_frame, 'size', 0) == 0:
                 self._consecutive_failures += 1
-                if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    logger.warning(f"{self._consecutive_failures} consecutive read failures, closing connection.", camera_id=self.camera_id)
-                    if self.cap:
-                        self.cap.release()
-                        self.cap = None
-                time.sleep(0.03)
+                self.is_reconnecting = True
+                if self.cap:
+                    old_cap = self.cap
+                    self.cap = None
+                    threading.Thread(target=lambda c: c.release(), args=(old_cap,), daemon=True).start()
+                time.sleep(1.0)
                 continue
 
             self._consecutive_failures = 0
@@ -783,13 +904,20 @@ class CameraFeedWidget(ttk.Frame):
                         try:
                             frame_to_show = result_packet.frame
                             alert_active = result_packet.alert_triggered
-                            rgb = cv2.cvtColor(frame_to_show, cv2.COLOR_BGR2RGB)
+                            
+                            # OpenCV resize is extremely fast, do it on the background thread using bilinear
+                            cw = _cam_self.target_width
+                            ch = _cam_self.target_height
+                            resized_bgr = cv2.resize(frame_to_show, (cw, ch), interpolation=cv2.INTER_LINEAR)
+                            rgb = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB)
+                            img_pil = Image.fromarray(rgb)
+                            
                             if _cam_self.result_queue.full():
                                 try:
                                     _cam_self.result_queue.get_nowait()
                                 except queue.Empty:
                                     pass
-                            _cam_self.result_queue.put((rgb, alert_active))
+                            _cam_self.result_queue.put((img_pil, alert_active))
                             
                             # Incident recording
                             _cam_self.recorder.process_frame(frame_to_show, result_packet.to_dict())
@@ -868,13 +996,20 @@ class CameraFeedWidget(ttk.Frame):
             try:
                 frame_to_show = packet.frame
                 alert_active = packet.alert_triggered
-                rgb = cv2.cvtColor(frame_to_show, cv2.COLOR_BGR2RGB)
+                
+                # Perform resize using cv2.INTER_LINEAR, then convert BGR to RGB
+                cw = self.target_width
+                ch = self.target_height
+                resized_bgr = cv2.resize(frame_to_show, (cw, ch), interpolation=cv2.INTER_LINEAR)
+                rgb = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB)
+                img_pil = Image.fromarray(rgb)
+                
                 if self.result_queue.full():
                     try:
                         self.result_queue.get_nowait()
                     except queue.Empty:
                         pass
-                self.result_queue.put((rgb, alert_active))
+                self.result_queue.put((img_pil, alert_active))
                 
                 # --- INCIDENT RECORDING LOGIC ---
                 self.recorder.process_frame(frame_to_show, packet.to_dict())
@@ -909,9 +1044,16 @@ class CameraFeedWidget(ttk.Frame):
                 # but we'll skip the drawing block if frame_rgb is None
                 pass
             
-            # Special case for "Signal Lost" handled by worker not putting data
-            if frame_rgb is None and (not self.cap or not self.cap.isOpened()):
-                self.draw_placeholder("Signal Lost")
+            # Special case for "Signal Lost" or "Reconnecting" handled by worker not putting data
+            is_recon = getattr(self, "is_reconnecting", False)
+            if frame_rgb is None and (not self.cap or not self.cap.isOpened() or is_recon):
+                status_text = "Reconnecting..." if is_recon else "Signal Lost"
+                self.draw_placeholder(status_text)
+                
+                status_lbl = "RECONNECTING" if is_recon else "OFFLINE"
+                status_color = "#ff9f43" if is_recon else "#f25c5c"
+                self.lbl_status.configure(text=status_lbl, foreground=status_color)
+                
                 self.after(30, self.update_loop)
                 return
 
@@ -926,21 +1068,48 @@ class CameraFeedWidget(ttk.Frame):
             frame_rgb = self.last_frame_rgb
 
         if frame_rgb is not None:
+            t_start = time.perf_counter()
             cw = self.canvas.winfo_width()
             ch = self.canvas.winfo_height()
             if cw < 10 or ch < 10:
                 cw, ch = 320, 240
+            
+            # Cache dimensions for background threads
+            self.target_width = cw
+            self.target_height = ch
 
-            img_pil = Image.fromarray(frame_rgb)
-            img_pil = img_pil.resize((cw, ch))
+            t0 = time.perf_counter()
+            if isinstance(frame_rgb, Image.Image):
+                if frame_rgb.size == (cw, ch):
+                    img_pil = frame_rgb
+                    t_resize = 0.0
+                else:
+                    # Fallback resize on main thread (e.g. during active window resizing)
+                    img_pil = frame_rgb.resize((cw, ch))
+                    self.fallback_count += 1
+                    t_resize = (time.perf_counter() - t0) * 1000
+            else:
+                img_pil = Image.fromarray(frame_rgb)
+                img_pil = img_pil.resize((cw, ch))
+                t_resize = (time.perf_counter() - t0) * 1000
+            
+            t1 = time.perf_counter()
             self.tk_image = ImageTk.PhotoImage(img_pil)
+            t_photo = (time.perf_counter() - t1) * 1000
+            
             self.last_frame_rgb = frame_rgb
             
+            t2 = time.perf_counter()
             # Optimized rendering: Update existing item instead of recreating
             if not hasattr(self, 'image_id') or self.image_id is None:
                 self.image_id = self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
             else:
                 self.canvas.itemconfig(self.image_id, image=self.tk_image)
+            t_canvas = (time.perf_counter() - t2) * 1000
+            
+            t_total = (time.perf_counter() - t_start) * 1000
+            print(f"[UI TIME] Cam {self.camera_id}: Resize {t_resize:.1f}ms, PhotoImage {t_photo:.1f}ms, Canvas {t_canvas:.1f}ms (Total {t_total:.1f}ms) | Fallbacks: {self.fallback_count}", flush=True)
+
 
         # --- status ---
         # Show status from the recorder (NORMAL, RECORDING, or COOLDOWN)

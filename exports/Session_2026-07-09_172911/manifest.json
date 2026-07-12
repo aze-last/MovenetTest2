@@ -1,0 +1,27 @@
+{
+  "export_schema_version": "1.0",
+  "report_version": "1.0",
+  "telemetry_version": "1.0",
+  "benchmark_version": "1.0",
+  "offline_pipeline_version": "2.0",
+  "session_id": "Session_2026-07-09_172911",
+  "profile": "Standard",
+  "video_path": "C:/Users/ASUS/Downloads/Video/videoplayback_15.mp4",
+  "timestamp": "2026-07-09T17:29:47.065870",
+  "operator": "LocalAdmin",
+  "frames_processed": 83,
+  "duration_seconds": 14.867327690124512,
+  "hardware": {
+    "hardware_fingerprint": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD_NVIDIA GeForce RTX 2050",
+    "hardware_name": "SHIFU",
+    "cpu": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
+    "gpu": "NVIDIA GeForce RTX 2050",
+    "ram": "16 GB",
+    "os": "Windows-10-10.0.26200-SP0"
+  },
+  "benchmarks": {
+    "snapshots_requested": 0,
+    "snapshots_written": 0,
+    "snapshots_skipped": 0
+  }
+}

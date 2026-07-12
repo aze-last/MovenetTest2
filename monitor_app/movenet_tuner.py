@@ -171,6 +171,7 @@ class MoveNetTuner:
             while True:
                 ret, frame = cap.read()
                 if not ret:
+                    time.sleep(0.03)
                     continue
 
                 moving, score = self.detect_motion(frame)

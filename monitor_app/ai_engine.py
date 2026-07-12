@@ -467,7 +467,8 @@ class MotionOptimizedEngine:
 
             # NMS: suppress duplicate detections of the same person (split detections)
             # If two detections have centroids within 15% of frame width, keep the higher-confidence one
-            nms_threshold = 0.15  # in normalized [0,1] space
+            frame_h, frame_w = res["frame"].shape[:2]
+            nms_threshold_px = 0.15 * frame_w
             suppressed = set()
             for i_det in range(len(raw_detected)):
                 if i_det in suppressed:
@@ -477,8 +478,8 @@ class MotionOptimizedEngine:
                         continue
                     cx_i, cy_i = raw_detected[i_det][2]
                     cx_j, cy_j = raw_detected[j_det][2]
-                    dist = ((cx_i - cx_j) ** 2 + (cy_i - cy_j) ** 2) ** 0.5
-                    if dist < nms_threshold:
+                    dist_px = (((cx_i - cx_j) * frame_w) ** 2 + ((cy_i - cy_j) * frame_h) ** 2) ** 0.5
+                    if dist_px < nms_threshold_px:
                         # Suppress the lower-confidence detection
                         if raw_detected[i_det][3] >= raw_detected[j_det][3]:
                             suppressed.add(j_det)
@@ -566,16 +567,26 @@ class MotionOptimizedEngine:
                     results = self.yolo_custom.track(res["frame"], persist=True, verbose=False, imgsz=inference_imgsz, device=device)
                 except Exception as e:
                     print(f"[YOLO] CRITICAL: tracking failed on active model '{getattr(self, 'active_model_name', 'unknown')}': {e}")
-                    print("[YOLO] Attempting emergency fallback to best.pt for this session...")
                     import os
                     model_dir = os.path.join(os.path.dirname(__file__), "models")
                     fallback_path = os.path.join(model_dir, get_config("yolo", "model_path_fallback", "best.pt"))
-                    if os.path.exists(fallback_path):
-                        self.yolo_custom = YOLO(fallback_path)
-                        self.active_model_name = "best.pt (emergency fallback)"
-                        results = self.yolo_custom.track(res["frame"], persist=True, verbose=False, imgsz=inference_imgsz, device=device)
-                    else:
-                        results = []
+                    if os.path.exists(fallback_path) and not getattr(self, '_yolo_is_reloading', False):
+                        self._yolo_is_reloading = True
+                        print("[YOLO] Flagging degraded state. Starting background reload to avoid blocking inference...")
+                        def _bg_reload():
+                            try:
+                                print(f"[YOLO-BG] Loading fallback model from {fallback_path}...")
+                                new_model = YOLO(fallback_path)
+                                self.yolo_custom = new_model
+                                self.active_model_name = "best.pt (emergency fallback)"
+                                print("[YOLO-BG] Background reload complete. Tracking restored.")
+                            except Exception as reload_err:
+                                print(f"[YOLO-BG] Background reload failed: {reload_err}")
+                            finally:
+                                self._yolo_is_reloading = False
+                        import threading
+                        threading.Thread(target=_bg_reload, daemon=True).start()
+                    results = []
 
                 CLASS_NAMES = {0: "knife", 1: "cellphone"}
                 CONF_THRESHOLDS = {

@@ -1,12 +1,14 @@
 # CellWatch AI
 ## Coordinator Manifest, Engineering Constitution & Project Context
 
+## USE SELF HEALING SKILL EVERY ERROR OR SAME CODE PROBLEM OCCURS FOR TESTING, FIXING OR OPTIMIZATION ITS IN HERE >>> C:\Users\ASUS\PycharmProjects\MovenetTutorial\.agent-team\templates\self-healing.skill
 ## Movenet is running on CPU and YOLO runs GPU
 ## Target Hardware: Windows Laptop with NVIDIA RTX 2050
 ## Target FPS: 20-30 FPS
-## Everytime the developer do everyday work/job for oyu you will make a documentation on what was change which line is it and what is the purpose of it on this file C:\Users\ASUS\PycharmProjects\MovenetTutorial\capstone_progress_report.md
-## Dont remove any code, if you need to remove a line/code make sure to make a documentation about it and its purpose.
+## Everytime the developer do everyday work/job for you will make a documentation on what was change which line is it and what is the purpose of it on this file C:\Users\ASUS\PycharmProjects\MovenetTutorial\capstone_progress_report.md
+## Dont remove any code, if you need to remove a line/code make sure to make a documentation or always mention how would you do it in you implemetation_plan.md about it and its purpose.
 ## Also bundle everything inside this zip folder C:\Users\ASUS\PycharmProjects\MovenetTutorial\changes_today.zip but only the changes that you did today
+## If you're not 100% certain code exists, say so explicitly instead of describing it — 'let me check' costs nothing, a hallucinated snippet costs a wasted review cycle.
 
 ## always use skill for rules and optimizations /systematic-debugging, /python-pro, /ml-engineer, /computer-vision-expert
 

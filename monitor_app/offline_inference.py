@@ -138,9 +138,11 @@ class OfflineInferenceManager:
             frame_start_time = time.perf_counter()
             video_time_str = format_video_time(current_frame, fps)
             
+            frame_copy = frame.copy()
+            
             packet = EvidencePacket(
                 camera_id=self.camera_id,
-                frame=frame.copy(),
+                frame=frame_copy,
                 timestamp=time.time(),
                 frame_uuid=str(uuid.uuid4())
             )
@@ -151,7 +153,7 @@ class OfflineInferenceManager:
                 # but catastrophic for forensic analysis of static scenes like a detainee
                 # sitting with a cellphone). We call the internal AI methods directly.
                 res = {
-                    "frame": frame.copy(), "motion_detected": True, "motion_score": 0,
+                    "frame": frame_copy, "motion_detected": True, "motion_score": 0,
                     "num_people": 0, "alert_triggered": False, "alerts": [],
                     "detections": {"behavior": [], "contraband": []},
                     "processing_mode": "Offline Forensic (No Gate)"

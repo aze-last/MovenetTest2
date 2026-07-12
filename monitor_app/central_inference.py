@@ -10,10 +10,11 @@ from monitor_app.logger import get_module_logger
 logger = get_module_logger("Central Inference")
 
 class InferenceTask:
-    def __init__(self, packet: EvidencePacket):
+    def __init__(self, packet: EvidencePacket, callback: Optional[Callable] = None):
         self.packet = packet
         self.event = threading.Event()
         self.result: Optional[EvidencePacket] = None
+        self.callback = callback
 
 class CentralInferenceManager:
     """
@@ -44,6 +45,7 @@ class CentralInferenceManager:
         self.last_yolo_results = {}
         
         self.movenet_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.callback_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self.movenet_pending = {}
         
         # Performance tuning parameters
@@ -500,6 +502,8 @@ class CentralInferenceManager:
                     get_event_bus().publish(TELEM_PIPELINE_COMPLETE, TELEM_PIPELINE_COMPLETE, ctx.to_dict())
 
                 task.result = packet
+                if hasattr(task, 'callback') and task.callback:
+                    self.callback_executor.submit(task.callback, task.result)
                 task.event.set()
                 self.task_queue.task_done()
             except queue.Empty:
@@ -576,7 +580,7 @@ class CentralInferenceManager:
         
         This prevents camera worker threads from blocking on GPU inference.
         """
-        task = InferenceTask(packet)
+        task = InferenceTask(packet, callback=callback)
         
         if packet.frame_uuid:
             from monitor_app.telemetry import get_telemetry_engine
@@ -609,21 +613,15 @@ class CentralInferenceManager:
                             "reason": "queue_backpressure"
                         })
                     
+                    if hasattr(dropped_task, 'callback') and dropped_task.callback:
+                        self.callback_executor.submit(dropped_task.callback, dropped_task.result)
+                    
                     dropped_task.event.set()
                     self.task_queue.task_done()
                 except queue.Empty:
                     pass
 
-        # If callback provided, wait in a short-lived thread
-        if callback:
-            def _wait_and_callback():
-                finished = task.event.wait(timeout=3.0)
-                if finished and task.result:
-                    callback(task.result)
-                else:
-                    packet.processing_mode = "Inference Timeout"
-                    callback(packet)
-            threading.Thread(target=_wait_and_callback, daemon=True).start()
+
 
 # Global Centralized Inference Manager Singleton
 _global_inference_manager = CentralInferenceManager()
