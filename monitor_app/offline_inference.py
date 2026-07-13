@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 from monitor_app.evidence import EvidencePacket
-from monitor_app.ai_engine import MotionOptimizedEngine, BasicMotionEngine, TF_AVAILABLE, YOLO_AVAILABLE
+from monitor_app.ai_engine import MotionOptimizedEngine, BasicMotionEngine, ONNX_AVAILABLE, YOLO_AVAILABLE
 from monitor_app.behaviors import get_behavior_engine
 from monitor_app.decision import get_decision_engine
 
@@ -64,7 +64,7 @@ class OfflineInferenceManager:
         self.running = False
 
     def _initialize_engine(self):
-        ai_available = TF_AVAILABLE or YOLO_AVAILABLE
+        ai_available = ONNX_AVAILABLE or YOLO_AVAILABLE
         sens_map = {"Quick": "low", "Standard": "medium", "Benchmark": "medium", "Forensic": "high"}
         sens = sens_map.get(self.profile, "medium")
         
@@ -156,7 +156,9 @@ class OfflineInferenceManager:
                     "frame": frame_copy, "motion_detected": True, "motion_score": 0,
                     "num_people": 0, "alert_triggered": False, "alerts": [],
                     "detections": {"behavior": [], "contraband": []},
-                    "processing_mode": "Offline Forensic (No Gate)"
+                    "processing_mode": "Offline Forensic (No Gate)",
+                    "timestamp": current_frame / fps,
+                    "frame_index": current_frame
                 }
                 with self.engine.lock:
                     self.engine.stats["total"] += 1
@@ -227,6 +229,17 @@ class OfflineInferenceManager:
                     "camera_source": os.path.basename(self.video_path)
                 })
                 
+            # Draw YOLO contraband boxes
+            for det in packet.detections.get("contraband", []):
+                name = det.get("name", "Unknown")
+                track_id = det.get("track_id", -1)
+                x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
+                
+                label_text = f"ALERT: {name.upper()} (ID: {track_id})"
+                cv2.rectangle(packet.frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                cv2.putText(packet.frame, label_text, (x1, max(0, y1 - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
             # Add YOLO Contraband
             for c in packet.detections.get("contraband", []):
                 self.all_detections.append({

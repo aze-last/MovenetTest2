@@ -28,24 +28,18 @@ class CapstoneDebug:
 # ==========================================
 # AI AVAILABILITY CHECK
 # ==========================================
-TF_AVAILABLE = False
-HUB_AVAILABLE = False
+ONNX_AVAILABLE = False
 YOLO_AVAILABLE = False
 
 try:
-    import tensorflow as tf
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except Exception as e:
+    import traceback
+    traceback.print_exc()
 
-    if hasattr(tf, "__version__"):
-        TF_AVAILABLE = True
-        import tensorflow_hub as hub
-
-        HUB_AVAILABLE = True
-except Exception:
-    pass
-if not TF_AVAILABLE:
-    print("TensorFlow not available; MoveNet disabled.")
-elif not HUB_AVAILABLE:
-    print("tensorflow_hub not available; will use local MoveNet if present.")
+if not ONNX_AVAILABLE:
+    print("onnxruntime not available; MoveNet disabled.")
 
 try:
     from ultralytics import YOLO
@@ -97,7 +91,7 @@ class BasicMotionEngine:
 class MotionOptimizedEngine:
     """
     Capstone Grade AI Engine.
-    Combines: MoveNet (Logic) + YOLOv8 (Objects/Pose Fallback)
+    Combines: MoveNet (Logic) + YOLO26s (Objects/Pose Fallback)
     Optimization: Only runs heavy AI when Stage 1 Motion is detected.
     """
 
@@ -185,60 +179,41 @@ class MotionOptimizedEngine:
             print(f"--- AI ENGINE: Profile switched to '{level}' ---")
 
     def _setup_hardware(self):
-        """Enable GPU for YOLOv8 and force CPU for TensorFlow/MoveNet to conserve VRAM."""
-        # --- MoveNet / TensorFlow (Forced CPU) ---
-        if TF_AVAILABLE:
-            try:
-                tf.config.set_visible_devices([], 'GPU')
-                self.gpu_enabled = False
-                print("MoveNet: Forced CPU execution (GPU hidden to conserve VRAM)")
-                CapstoneDebug.log("All", "MoveNet running on CPU (visible GPUs: [])")
-            except Exception as e:
-                print(f"MoveNet forced CPU setup error: {e}")
+        """Enable GPU for YOLO26s and force CPU for MoveNet to conserve VRAM."""
+        # --- MoveNet / ONNX (Forced CPU) ---
+        if ONNX_AVAILABLE:
+            print("MoveNet: ONNX Runtime CPU execution")
+            CapstoneDebug.log("All", "MoveNet running on CPU via ONNX Runtime")
         else:
-            print("MoveNet: TensorFlow unavailable — skipped")
+            print("MoveNet: ONNX unavailable — skipped")
 
-        # --- YOLOv8 / PyTorch ---
+        # --- YOLO26s / PyTorch ---
         if YOLO_AVAILABLE:
             if torch.cuda.is_available():
                 self.yolo_device = 0  # GPU index
-                print(f" YOLOv8: GPU Accelerated — {torch.cuda.get_device_name(0)}")
+                print(f" YOLO26s: GPU Accelerated — {torch.cuda.get_device_name(0)}")
             else:
                 self.yolo_device = 'cpu'
-                print("YOLOv8: No CUDA GPU detected — running on CPU")
+                print("YOLO26s: No CUDA GPU detected — running on CPU")
         else:
             self.yolo_device = 'cpu'
-            print("YOLOv8: Ultralytics/PyTorch unavailable — skipped")
+            print("YOLO26s: Ultralytics/PyTorch unavailable — skipped")
 
     def _load_models(self):
         """Clean modular loading for explanation."""
-        if TF_AVAILABLE:
+        if ONNX_AVAILABLE:
             print("Loading MoveNet MultiPose (behavior engine)...")
             try:
-                # Try local first
-                p = os.path.join(os.path.dirname(__file__), "models", "movenet_multipose")
-                local_model_path = None
-                if os.path.exists(p):
-                    if os.path.exists(os.path.join(p, "saved_model.pb")):
-                        local_model_path = p
-                    else:
-                        for root, _dirs, files in os.walk(p):
-                            if "saved_model.pb" in files:
-                                local_model_path = root
-                                break
-                if local_model_path:
-                    self.movenet = tf.saved_model.load(local_model_path).signatures["serving_default"]
-                    print(f"MoveNet loaded from local path: {local_model_path}")
-                elif HUB_AVAILABLE:
-                    self.movenet = hub.load("https://tfhub.dev/google/movenet/multipose/lightning/1").signatures[
-                        "serving_default"]
-                    print("MoveNet loaded from TFHub.")
+                model_path = os.path.join(os.path.dirname(__file__), "models", "movenet_multipose.onnx")
+                if os.path.exists(model_path):
+                    self.movenet = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+                    print(f"MoveNet loaded from ONNX path: {model_path}")
                 else:
-                    print("MoveNet skipped: tensorflow_hub unavailable and local model missing.")
+                    print(f"MoveNet skipped: ONNX model missing at {model_path}")
             except Exception as e:
                 print(f"MoveNet load failed: {e}")
         else:
-            print("MoveNet skipped: TensorFlow unavailable.")
+            print("MoveNet skipped: ONNX unavailable.")
 
         if self.enable_yolo:
             from monitor_app.config import get_config
@@ -294,7 +269,7 @@ class MotionOptimizedEngine:
         self.last_gray[camera_id] = gray
         return score > adaptive_threshold, score
 
-    def process_frame(self, frame, camera_id="0", frame_uuid=None, motion_pre_detected=None):
+    def process_frame(self, frame, camera_id="0", frame_uuid=None, motion_pre_detected=None, frame_index=None):
         """Main AI pipeline called by the inference queue.
         
         Args:
@@ -315,7 +290,8 @@ class MotionOptimizedEngine:
             "frame": frame, "motion_detected": is_moving, "motion_score": score,
             "num_people": 0, "alert_triggered": False, "alerts": [],
             "detections": {"behavior": [], "contraband": []},
-            "processing_mode": "Power Saving (No Motion)"
+            "processing_mode": "Power Saving (No Motion)",
+            "frame_index": frame_index
         }
 
         gate_cfg = get_config("motion_gate")
@@ -372,13 +348,14 @@ class MotionOptimizedEngine:
         cv2.putText(res["frame"], res["processing_mode"], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         return res
 
-    def run_movenet_only(self, frame, camera_id="0"):
+    def run_movenet_only(self, frame, camera_id="0", frame_index=None):
         """Run only MoveNet inference (CPU-bound). Thread-safe.
         Returns partial result dict with behavior detections."""
         res = {
             "frame": frame, "num_people": 0, "alert_triggered": False,
             "alerts": [], "detections": {"behavior": [], "contraband": []},
             "tracked_persons": [],
+            "frame_index": frame_index
         }
         if self.movenet:
             with self.tf_inference_lock:
@@ -432,11 +409,12 @@ class MotionOptimizedEngine:
     def _run_movenet_logic(self, res, cam_id):
         img_input = cv2.cvtColor(res["frame"], cv2.COLOR_BGR2RGB)
         img_input = cv2.resize(img_input, (256, 256))
-        tensor = tf.cast(img_input, dtype=tf.int32)[tf.newaxis, ...]
+        input_data = np.expand_dims(img_input, axis=0).astype(np.int32)
 
         try:
-            outputs = self.movenet(tensor)
-            kpts = outputs["output_0"].numpy()[0]
+            input_name = self.movenet.get_inputs()[0].name
+            outputs = self.movenet.run(None, {input_name: input_data})
+            kpts = outputs[0][0]
             
             raw_detected = []
             for i in range(6):  # Max 6 people
@@ -508,8 +486,12 @@ class MotionOptimizedEngine:
                 )
                 tracked_list.append(tp)
 
+            frame_number = res.get("frame_index")
+            if frame_number is None:
+                frame_number = self.stats["total"]
+
             if tracked_list:
-                tracker.update(tracked_list, self.stats["total"])
+                tracker.update(tracked_list, frame_number)
 
             detected_people = []
             for tp in tracked_list:
@@ -519,7 +501,8 @@ class MotionOptimizedEngine:
                 
                 res["num_people"] += 1
                 self.draw_skeleton(res["frame"], person, stable_id)
-                label, score = self.classify_behavior(person, stable_id, cam_id, res["frame"].shape)
+                custom_time = res.get("timestamp", None)
+                label, score = self.classify_behavior(person, stable_id, cam_id, res["frame"].shape, custom_time=custom_time)
 
                 detected_people.append({
                     "p_id": raw_id,
@@ -674,11 +657,13 @@ class MotionOptimizedEngine:
             })
             CapstoneDebug.log(cam_id, f"CONTRABAND FOUND: {name} ({conf:.2f}) [ID: {track_id}]")
 
-    def classify_behavior(self, kps, p_id, cam_id, frame_shape):
+    def classify_behavior(self, kps, p_id, cam_id, frame_shape, custom_time=None):
         frame_h, frame_w = frame_shape[:2]
         key = f"{cam_id}_{p_id}"
         coords = kps[:, :2] * np.array([frame_h, frame_w])
         confs = kps[:, 2]
+
+        current_time = custom_time if custom_time is not None else time.time()
 
         if key not in self.trackers:
             self.trackers[key] = {
@@ -687,12 +672,12 @@ class MotionOptimizedEngine:
                 'smoothed_coords': coords.copy(),
                 'history': [],
                 'alert_count': 0,
-                'time': time.time()
+                'time': current_time
             }
             return "Normal", 0.0
 
         tracker = self.trackers[key]
-        dt = time.time() - tracker['time']
+        dt = current_time - tracker['time']
         if dt < 0.01: return "Normal", 0.0
 
         # Reset tracker if gap is too large to prevent velocity spikes from tracking gaps/reappearance
@@ -700,7 +685,7 @@ class MotionOptimizedEngine:
             tracker['prev_coords'] = coords
             tracker['prev_confs'] = confs
             tracker['smoothed_coords'] = coords.copy()
-            tracker['time'] = time.time()
+            tracker['time'] = current_time
             tracker['alert_count'] = 0
             tracker['history'] = []
             return "Normal", 0.0
@@ -747,7 +732,7 @@ class MotionOptimizedEngine:
 
         tracker['prev_coords'] = coords.copy()
         tracker['prev_confs'] = confs
-        tracker['time'] = time.time()
+        tracker['time'] = current_time
 
         tracker['history'].append(aggression_score)
         if len(tracker['history']) > 8: tracker['history'].pop(0)

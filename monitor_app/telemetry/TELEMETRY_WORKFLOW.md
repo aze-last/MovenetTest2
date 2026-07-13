@@ -48,7 +48,7 @@ The subsystem operates under two distinct workflows: **Live Telemetry** and **Co
 ### B. Controlled Benchmarking Workflow (Stress & Regression Testing)
 1. **Session Initialization**: The coordinator loads a session profile (Quick, Baseline, Load, Endurance) and queries system properties (CPU/GPU info, CUDA level, OS version, Git commit, config hash) to generate a **Session Manifest**.
 2. **Stress Feed Injection**: Multiple simulated camera threads feed high-frequency mock images into the inference manager.
-3. **AI Pipeline Validation**: The actual loaded YOLOv8 and MoveNet neural networks process the mock workload.
+3. **AI Pipeline Validation**: The actual loaded YOLO26s and MoveNet neural networks process the mock workload.
 4. **Metric Logging & Scoring**: Timeline records (CPU, temperatures, clocks, queues) are stored in [benchmark.db](file:///c:/Users/ASUS/PycharmProjects/MovenetTutorial/monitor_app/benchmark.db). An overall Performance Score (0-100) is calculated based on FPS stability, latency, and drops.
 5. **Regression & Exports**: The runner evaluates current performance against the locked **Golden Baseline**. It generates a portable export bundle containing manifests, Markdown reports, CSV time-series, and Matplotlib graphs.
 

@@ -120,7 +120,7 @@ class LoginScreen(ctk.CTkFrame):
         mission.pack(anchor="w")
 
         # 5. Technology Tags
-        tags = ["MoveNet Engine", "YOLOv8 Vision", "Secure Audit Log"]
+        tags = ["MoveNet Engine", "YOLO26s Vision", "Secure Audit Log"]
         tag_row = ctk.CTkFrame(content, fg_color="transparent")
         tag_row.pack(anchor="w", pady=(32, 0))
         

@@ -414,7 +414,7 @@ class SettingsScreen(ctk.CTkFrame):
             "high": "Designed for rapid detection of significant movement while maintaining stricter validation to reduce false aggression alerts.",
             "medium": "Standard monitoring configuration. Balanced sensitivity for typical activity levels.",
             "low": "Conservative monitoring mode designed to minimize false alerts by requiring stronger evidence before triggering detections.",
-            "custom": "User-configured threshold settings for MoveNet behavior tracking and YOLOv8 contraband detection.",
+            "custom": "User-configured threshold settings for MoveNet behavior tracking and YOLO26s contraband detection.",
         }
 
         # ── Load persisted settings ──
@@ -437,8 +437,8 @@ class SettingsScreen(ctk.CTkFrame):
             "alert_frames": ("Alert Frame Count", 1, 15, 14, "Number of consecutive frames that must satisfy detection conditions before an alert is generated.", True),
             "motion_threshold": ("Motion Threshold (pixels)", 500, 20000, 195, "Minimum amount of pixel change required before AI analysis is activated.", True),
             "motion_ratio": ("Motion Ratio", 0.001, 0.050, 49, "Percentage of the image frame that must change before the AI engine wakes from motion-gating mode.", False),
-            "yolo_knife_conf": ("Knife Confidence", 0.05, 0.95, 90, "Minimum YOLOv8 confidence score required before a knife detection is accepted. Increasing this reduces false alarms but may miss actual weapons. Decreasing this detects more but increases false positives.", False),
-            "yolo_cell_conf": ("Cellphone Confidence", 0.05, 0.95, 90, "Minimum YOLOv8 confidence score required before a cellphone detection is accepted. Increasing this reduces false alarms but may miss actual devices. Decreasing this detects more but increases false positives.", False),
+            "yolo_knife_conf": ("Knife Confidence", 0.05, 0.95, 90, "Minimum YOLO26s confidence score required before a knife detection is accepted. Increasing this reduces false alarms but may miss actual weapons. Decreasing this detects more but increases false positives.", False),
+            "yolo_cell_conf": ("Cellphone Confidence", 0.05, 0.95, 90, "Minimum YOLO26s confidence score required before a cellphone detection is accepted. Increasing this reduces false alarms but may miss actual devices. Decreasing this detects more but increases false positives.", False),
             "yolo_fallback_conf": ("Fallback Confidence", 0.05, 0.95, 90, "General confidence threshold used for detections that do not have a dedicated class-specific threshold. Increasing this reduces false alarms. Decreasing this detects more but increases false positives.", False)
         }
 
@@ -492,7 +492,7 @@ class SettingsScreen(ctk.CTkFrame):
         yolo_card = ctk.CTkFrame(grid_frame, fg_color=PALETTE["card"], corner_radius=18, border_width=1, border_color=PALETTE["border"])
         yolo_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=10)
         yolo_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(yolo_card, text="YOLOv8 Contraband Detection", font=("Segoe UI Bold", 14), text_color=PALETTE["accent"]).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
+        ctk.CTkLabel(yolo_card, text="YOLO26s Contraband Detection", font=("Segoe UI Bold", 14), text_color=PALETTE["accent"]).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
 
         self.sliders = {}
         self.slider_val_labels = {}
@@ -507,7 +507,7 @@ class SettingsScreen(ctk.CTkFrame):
 
         info_box = ctk.CTkFrame(yolo_card, fg_color=PALETTE["card_soft"], corner_radius=12)
         info_box.grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 16))
-        info_text = ("Note: YOLOv8 model (best.pt) handles class 0 (knife) and class 1 (cellphone).\n"
+        info_text = ("Note: YOLO26s model (best.pt) handles class 0 (knife) and class 1 (cellphone).\n"
                      "Heavy inference is gated by motion detection to conserve power.")
         ctk.CTkLabel(info_box, text=info_text, font=("Segoe UI", 11), text_color=PALETTE["muted"], justify="left", wraplength=320).pack(padx=12, pady=10)
 

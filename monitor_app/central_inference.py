@@ -19,7 +19,7 @@ class InferenceTask:
 class CentralInferenceManager:
     """
     Centralized Inference Queue manager.
-    Coordinates all YOLOv8 (GPU) and MoveNet (CPU) inference with parallel workers
+    Coordinates all YOLO26s (GPU) and MoveNet (CPU) inference with parallel workers
     to maximize hardware utilization.
     
     Architecture:
@@ -106,12 +106,12 @@ class CentralInferenceManager:
         logger.info("Queue Worker stopped.")
 
     def _initialize_engine(self):
-        from monitor_app.ai_engine import MotionOptimizedEngine, BasicMotionEngine, TF_AVAILABLE, YOLO_AVAILABLE
+        from monitor_app.ai_engine import MotionOptimizedEngine, BasicMotionEngine, ONNX_AVAILABLE, YOLO_AVAILABLE
         ai_cfg = profile_store.get_ai_settings()
         profile = ai_cfg["active_profile"]
         custom_vals = ai_cfg["custom_settings"] if profile == "custom" else None
 
-        ai_available = TF_AVAILABLE or YOLO_AVAILABLE
+        ai_available = ONNX_AVAILABLE or YOLO_AVAILABLE
         if ai_available and MotionOptimizedEngine is not None:
             logger.info("Initializing MotionOptimizedEngine (YOLO-GPU + MoveNet-CPU)...")
             self.engine = MotionOptimizedEngine(
@@ -127,7 +127,7 @@ class CentralInferenceManager:
             logger.info("Initializing BasicMotionEngine fallback...")
             self.engine = BasicMotionEngine(sensitivity=profile)
 
-    def _run_parallel_inference(self, frame, camera_id, frame_uuid):
+    def _run_parallel_inference(self, frame, camera_id, frame_uuid, frame_index=None):
         """Run MoveNet (CPU) and YOLO (GPU) concurrently on the same frame.
         Returns merged result dict."""
         
@@ -139,7 +139,7 @@ class CentralInferenceManager:
         def _movenet_worker(frm_copy, cid):
             try:
                 ms = time.perf_counter()
-                res = self.engine.run_movenet_only(frm_copy, cid)
+                res = self.engine.run_movenet_only(frm_copy, cid, frame_index=frame_index)
                 with self.result_lock:
                     self.last_movenet_results[cid] = res
                 me = time.perf_counter()
@@ -265,6 +265,10 @@ class CentralInferenceManager:
                 # Process inference if engine exists and not paused
                 if self.engine and not self.inference_paused:
                     try:
+                        cam_id = packet.camera_id
+                        self.frame_indices[cam_id] = self.frame_indices.get(cam_id, 0) + 1
+                        frame_index = self.frame_indices[cam_id]
+
                         if packet.camera_id == "99":
                             res = packet.to_dict()
                         else:
@@ -285,7 +289,7 @@ class CentralInferenceManager:
                                 if should_run:
                                     inf_start = time.perf_counter()
                                     res = self._run_parallel_inference(
-                                        packet.frame, packet.camera_id, packet.frame_uuid
+                                        packet.frame, packet.camera_id, packet.frame_uuid, frame_index=frame_index
                                     )
                                     inf_end = time.perf_counter()
                                     inf_ms = (inf_end - inf_start) * 1000.0
@@ -345,10 +349,6 @@ class CentralInferenceManager:
                         from monitor_app.behaviors import get_behavior_engine
                         ai_cfg = profile_store.get_ai_settings()
                         profile = ai_cfg["active_profile"]
-                        
-                        cam_id = packet.camera_id
-                        self.frame_indices[cam_id] = self.frame_indices.get(cam_id, 0) + 1
-                        frame_index = self.frame_indices[cam_id]
                         
                         if ctx:
                             ctx.mark("behavior_start")

@@ -58,7 +58,7 @@ FONT_BOLD = ("Helvetica", 10, "bold")
 # --- Mock AI Engine ---
 class MockAI:
     """
-    Simulates the MoveNet and YOLOv8 detection backend.
+    Simulates the MoveNet and YOLO26s detection backend.
     In a real implementation, this would interact with the loaded models.
     """
     

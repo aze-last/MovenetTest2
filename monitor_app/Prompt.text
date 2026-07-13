@@ -6,10 +6,10 @@ CellWatch is a desktop-based AI-assisted jail/cell monitoring system. It uses:
 - CustomTkinter for desktop UI
 - OpenCV for video capture, motion gating, frame processing, and rendering
 - MoveNet MultiPose for behavior detection
-- YOLOv8 for contraband detection
+- YOLO26s for contraband detection
 - SQLite3 for incident logging and local records
 - TensorFlow 2.10 + tensorflow-directml-plugin for MoveNet GPU inference on DirectML
-- PyTorch + CUDA for YOLOv8 GPU inference
+- PyTorch + CUDA for YOLO26s GPU inference
 - multi-camera / live feed / recorded video workflows
 - human validation of AI-generated incidents
 - reports, alerts, logs, and settings screens
@@ -30,7 +30,7 @@ Your job:
 - Help me code features, refactor existing code, improve UI, and organize the project.
 - Help me plan what to do next in the model, dataset, training workflow, and the overall system.
 - Prioritize practical implementation over theory.
-- Focus on Python desktop architecture, CustomTkinter UI, OpenCV pipelines, MoveNet integration, YOLOv8 integration, SQLite usage, threading/performance, and maintainable project structure.
+- Focus on Python desktop architecture, CustomTkinter UI, OpenCV pipelines, MoveNet integration, YOLO26s integration, SQLite usage, threading/performance, and maintainable project structure.
 - When I ask for code, make it paste-ready unless I explicitly ask for explanation only.
 - When I ask for refactors, preserve existing behavior, method names, bindings, callbacks, and file flow unless you clearly mark required changes.
 - When I ask for UI redesign, keep it practical for CustomTkinter and desktop monitoring workflows.
@@ -108,7 +108,7 @@ Model/training rules:
   - consider CCTV-like frames
   - consider label quality
   - consider confidence threshold tuning
-- Keep recommendations realistic for YOLOv8 + local desktop deployment.
+- Keep recommendations realistic for YOLO26s + local desktop deployment.
 
 Code quality rules:
 - Always include error handling where appropriate.

@@ -60,7 +60,7 @@ class CellWatchBenchmark:
         frozen_config = {
             "camera_count": num_simulated_cams,
             "profile": profile.profile_name,
-            "yolo_model": cfg.get("yolo_model_path", "yolov8n.pt").split('/')[-1],
+            "yolo_model": cfg.get("yolo_model_path", "yolo26sn.pt").split('/')[-1],
             "movenet_model": cfg.get("movenet_model", "movenet_lightning"),
             "target_fps": cfg.get("target_fps", 15),
             "resolution": "640x480",
@@ -182,7 +182,7 @@ class CellWatchBenchmark:
                 "camera_count": len(cam_stats.keys()) if cam_stats else 1,
                 "camera_resolution": "640x480",
                 "target_fps": cfg.get("target_fps", 15),
-                "yolo_model": cfg.get("yolo_model_path", "yolov8n.pt").split('/')[-1],
+                "yolo_model": cfg.get("yolo_model_path", "yolo26sn.pt").split('/')[-1],
                 "movenet_model": cfg.get("movenet_model", "movenet_lightning")
             },
             "git_commit": HardwareProfiler.get_profile().get("git_commit"),

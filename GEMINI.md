@@ -593,7 +593,7 @@ Never mix responsibilities.
 
 # AI Models
 
-MoveNet
+MoveNet (ONNX Runtime / CPU)
 
 Responsible for
 
@@ -603,7 +603,7 @@ behavior analysis
 
 motion interpretation
 
-YOLO
+YOLO26s (TensorRT / GPU)
 
 Responsible for
 

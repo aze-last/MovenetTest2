@@ -7,30 +7,16 @@ import cv2
 import numpy as np
 
 try:
-    import tensorflow as tf
-    TF_AVAILABLE = True
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
 except Exception:
-    TF_AVAILABLE = False
-    tf = None
+    ONNX_AVAILABLE = False
+    ort = None
 
-try:
-    import tensorflow_hub as hub
-    HUB_AVAILABLE = True
-except Exception:
-    HUB_AVAILABLE = False
-    hub = None
-
-if TF_AVAILABLE:
-    try:
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            print("✅ MoveNet: GPU Accelerated")
-        else:
-            print("❌ MoveNet: GPU not available")
-    except Exception:
-        print("❌ MoveNet: GPU not available")
+if ONNX_AVAILABLE:
+    print("✅ MoveNet: ONNX CPU Runtime")
+else:
+    print("❌ MoveNet: ONNX Runtime not available")
 
 # =========================
 # Tune parameters here
@@ -60,41 +46,20 @@ class MoveNetTuner:
         self._load_model()
 
     def _setup_hardware(self):
-        if not TF_AVAILABLE:
+        if not ONNX_AVAILABLE:
             return
-        try:
-            gpus = tf.config.list_physical_devices("GPU")
-            if gpus:
-                for gpu in gpus:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                print(f"MoveNet Tuner: GPU enabled ({gpus[0].name})")
-            else:
-                print("MoveNet Tuner: No GPU detected, using CPU.")
-        except Exception as e:
-            print(f"MoveNet Tuner: GPU setup failed: {e}")
+        print("MoveNet Tuner: ONNX Runtime CPU execution")
 
     def _load_model(self):
-        if not TF_AVAILABLE:
-            raise RuntimeError("TensorFlow not available in this environment.")
+        if not ONNX_AVAILABLE:
+            raise RuntimeError("ONNX Runtime not available in this environment.")
 
-        local_model_path = None
-        if os.path.exists(self.model_dir):
-            if os.path.exists(os.path.join(self.model_dir, "saved_model.pb")):
-                local_model_path = self.model_dir
-            else:
-                for root, _dirs, files in os.walk(self.model_dir):
-                    if "saved_model.pb" in files:
-                        local_model_path = root
-                        break
-
-        if local_model_path:
-            self.movenet = tf.saved_model.load(local_model_path).signatures["serving_default"]
-            print(f"MoveNet loaded from local path: {local_model_path}")
-        elif HUB_AVAILABLE:
-            self.movenet = hub.load("https://tfhub.dev/google/movenet/multipose/lightning/1").signatures["serving_default"]
-            print("MoveNet loaded from TFHub.")
+        model_path = os.path.join(self.model_dir, "movenet_multipose.onnx")
+        if os.path.exists(model_path):
+            self.movenet = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            print(f"MoveNet loaded from ONNX path: {model_path}")
         else:
-            raise RuntimeError("tensorflow_hub not available and local model missing.")
+            raise RuntimeError(f"ONNX model missing at {model_path}")
 
     def detect_motion(self, frame):
         frame_h, frame_w = frame.shape[:2]
@@ -178,9 +143,10 @@ class MoveNetTuner:
                 if moving:
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     img_input = cv2.resize(rgb, (256, 256))
-                    tensor = tf.cast(img_input, dtype=tf.int32)[tf.newaxis, ...]
-                    outputs = self.movenet(tensor)
-                    kpts = outputs["output_0"].numpy()[0]
+                    input_data = np.expand_dims(img_input, axis=0).astype(np.int32)
+                    input_name = self.movenet.get_inputs()[0].name
+                    outputs = self.movenet.run(None, {input_name: input_data})
+                    kpts = outputs[0][0]
 
                     for i in range(6):
                         person = kpts[i, :51].reshape(17, 3)
@@ -239,7 +205,7 @@ def _backend_from_name(name):
 
 
 if __name__ == "__main__":
-    model_dir = os.path.join(os.path.dirname(__file__), "models", "movenet_multipose")
+    model_dir = os.path.join(os.path.dirname(__file__), "models")
     tuner = MoveNetTuner(model_dir)
     cam_index, backend_name = _parse_args(sys.argv)
     backend = _backend_from_name(backend_name)
