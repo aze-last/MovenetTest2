@@ -1,7 +1,6 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 CellWatch AI is an undergraduate capstone project: a real-time institutional monitoring system for jail cells (target deployment: Philippine BJMP facilities). One Windows laptop processes up to 4 CCTV camera feeds through an AI pipeline (MoveNet pose estimation + YOLO26s contraband detection) to detect aggression, fast movement, contraband (knife/cellphone), and hand concealment, then records evidence and raises operator alerts. It is an event-driven monitoring system, not a frame-by-frame object detector — see `GEMINI.md` for the full engineering constitution this project is built against.

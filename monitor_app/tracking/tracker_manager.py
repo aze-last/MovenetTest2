@@ -19,26 +19,26 @@ class TrackerManager:
         
         # Setup Human Tracker
         args_human = IterableSimpleNamespace(
-            track_thresh=human_cfg.get("track_thresh", 0.50),
-            track_buffer=human_cfg.get("track_buffer", 30),
-            match_thresh=human_cfg.get("match_thresh", 0.8),
+            track_thresh=human_cfg.get("track_thresh", 0.25),
+            track_buffer=human_cfg.get("track_buffer", 60),
+            match_thresh=human_cfg.get("match_thresh", 0.5),
             frame_rate=30,
-            track_high_thresh=human_cfg.get("track_thresh", 0.5),
-            track_low_thresh=0.1,
-            new_track_thresh=human_cfg.get("track_thresh", 0.5) + 0.1,
+            track_high_thresh=human_cfg.get("track_thresh", 0.25),
+            track_low_thresh=0.05,
+            new_track_thresh=human_cfg.get("track_thresh", 0.25) + 0.05,
             fuse_score=False
         )
         self.human_tracker = BYTETracker(args_human)
         
         # Setup Object Tracker
         args_obj = IterableSimpleNamespace(
-            track_thresh=object_cfg.get("track_thresh", 0.3),
-            track_buffer=object_cfg.get("track_buffer", 10),
-            match_thresh=object_cfg.get("match_thresh", 0.8),
+            track_thresh=object_cfg.get("track_thresh", 0.20),
+            track_buffer=object_cfg.get("track_buffer", 45),
+            match_thresh=object_cfg.get("match_thresh", 0.5),
             frame_rate=15,
-            track_high_thresh=object_cfg.get("track_thresh", 0.3),
-            track_low_thresh=0.1,
-            new_track_thresh=object_cfg.get("track_thresh", 0.3) + 0.1,
+            track_high_thresh=object_cfg.get("track_thresh", 0.20),
+            track_low_thresh=0.05,
+            new_track_thresh=object_cfg.get("track_thresh", 0.20) + 0.05,
             fuse_score=False
         )
         self.object_tracker = BYTETracker(args_obj)

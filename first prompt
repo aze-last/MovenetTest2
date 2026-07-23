@@ -1,29 +1,11 @@
-Coordinator,
+Coordinator, check my Obsidian vault: "C:\Users\ASUS\OneDrive\Desktop\MovenetTutorial"
+  [[GEMINI_Constitution]]
+ [[Feature_6_Bounding_Boxes]]
 
-Read GEMINI.md first.
+  My task: check the box flickering issue for yolo and movenet skeleton tracking coz they are not consistent they flickered obviously and sometimes copies a detection or they stacked a box investigate workers for tracker maybe i feel it has to do something with the fusion and decision worker, use skill /systematic-debuggin /computer-vision-expert /python-pro /ml-engineer
 
-Then activate only the agents required for this task.
-
-Each agent must stay within its defined responsibilities.
-
-If multiple agents disagree, Architecture Guardian has final authority on architecture, while Coordinator resolves conflicts.
-
-Before coding:
-
-1. Analyze.
-2. Produce a plan.
-3. Identify risks.
-4. Wait for approval.
-
-After approval:
-
-1. Implement.
-2. Validate.
-3. Run regression checks.
-4. Summarize changes.
-5. List affected files.
-6. List remaining technical debt.
-
-Never skip the planning phase for architectural changes.
-Never violate thread safety.
-Never introduce feature creep.
+  Before coding:
+  1. Analyze for architecture compliance
+  2. Produce a plan
+  3. Identify risks
+  4. Wait for my approval

@@ -5,6 +5,7 @@ import concurrent.futures
 from typing import Callable, Optional
 from monitor_app.evidence import EvidencePacket
 from monitor_app import profile_store
+from monitor_app.config import get_config
 from monitor_app.logger import get_module_logger
 
 logger = get_module_logger("Central Inference")
@@ -47,7 +48,10 @@ class CentralInferenceManager:
         self.movenet_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.callback_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self.movenet_pending = {}
-        
+        # Phase C1/C3: render-side box + alert-colour hysteresis, per camera:
+        #   cam_id -> {stable_id: {"bbox", "is_alert", "alert_hold", "misses"}}
+        self.box_hysteresis = {}
+
         # Performance tuning parameters
         self.movenet_skip = 2
         self.yolo_skip = 1
@@ -139,7 +143,9 @@ class CentralInferenceManager:
         def _movenet_worker(frm_copy, cid):
             try:
                 ms = time.perf_counter()
-                res = self.engine.run_movenet_only(frm_copy, cid, frame_index=frame_index)
+                # RC-4: draw=False — this frame copy's pixels are discarded after keypoint
+                # extraction; the visible skeleton is drawn in _render_person_boxes.
+                res = self.engine.run_movenet_only(frm_copy, cid, frame_index=frame_index, draw=False)
                 with self.result_lock:
                     self.last_movenet_results[cid] = res
                 me = time.perf_counter()
@@ -204,21 +210,169 @@ class CentralInferenceManager:
                 },
                 "processing_mode": "AI ACTIVE (Parallel GPU+CPU)",
                 "tracked_persons": movenet_result.get("tracked_persons", []),
+                # RC-4: frame index the cached MoveNet result was computed on, so the
+                # renderer can skip drawing a stale skeleton onto a much newer frame.
+                "movenet_src_frame_index": movenet_result.get("frame_index"),
             }
         
         # --- PHASE 2 Render: Continuous Box Drawing ---
+        # RC-2: draw through the render-dedup helper; merged["detections"] itself is
+        # untouched, so the decision path still sees every detection (ghosts included).
+        self._draw_contraband_boxes(merged["frame"], merged["detections"]["contraband"])
+
+        return merged
+
+    @staticmethod
+    def _iou(box_a, box_b):
+        """Intersection-over-union of two (x1, y1, x2, y2) boxes."""
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0:
+            return 0.0
+        area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+        area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
+    @classmethod
+    def _contraband_for_render(cls, detections):
+        """RC-2 render-only dedup: drop a coasting hysteresis ghost from the DRAW list
+        when a live detection of the same class overlaps it above
+        yolo.hysteresis_dedup_iou (the stacked-box symptom: old track_id key coasts at
+        the old position while the re-identified track draws live).
+
+        Render path only. The full detections list — ghosts included — has already been
+        written to res["detections"]["contraband"] / packet.detections, which is what
+        DecisionEngine (decision.py:63,93), AlertManager and IncidentRecorder consume.
+        Nothing is removed from that list here."""
+        thr = float(get_config("yolo", "hysteresis_dedup_iou", 0.5))
+        live = [d for d in detections if d.get("source") != "combined_hysteresis"]
+        drawable = list(live)
+        for ghost in detections:
+            if ghost.get("source") != "combined_hysteresis":
+                continue
+            overlaps_live = any(
+                d.get("name") == ghost.get("name")
+                and cls._iou(d.get("box", [0, 0, 0, 0]), ghost.get("box", [0, 0, 0, 0])) >= thr
+                for d in live
+            )
+            if not overlaps_live:
+                drawable.append(ghost)
+        return drawable
+
+    def _draw_contraband_boxes(self, frame, detections):
+        """Single draw helper for contraband boxes (live + power-saving paths)."""
         import cv2
-        for det in merged["detections"]["contraband"]:
+        for det in self._contraband_for_render(detections):
             name = det.get("name", "Unknown")
             track_id = det.get("track_id", -1)
             x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
-            
-            label_text = f"ALERT: {name.upper()} (ID: {track_id})"
-            cv2.rectangle(merged["frame"], (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.putText(merged["frame"], label_text, (x1, max(0, y1 - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.putText(frame, f"ALERT: {name.upper()} (ID: {track_id})",
+                        (x1, max(0, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        return merged
+    def _compute_is_alert(self, packet, p):
+        """Raw per-frame alert state for a person: legacy behavior detection (matched by
+        raw_person_id) OR new behavior evidence (matched by stable_id)."""
+        for b_det in packet.detections.get("behavior", []):
+            if (b_det.get("person_index") == p.raw_person_id
+                    and b_det.get("label") in ("Aggressive / Fighting", "Fast Movement")):
+                return True
+        for ev in packet.behavior_evidence:
+            if ev.stable_id == p.stable_id:
+                return True
+        return False
+
+    def _draw_person_box(self, frame, bbox, stable_id, is_alert):
+        import cv2
+        color = (0, 0, 255) if is_alert else (0, 255, 0)
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(frame, f"ID {stable_id}", (x1, max(0, y1 - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+    def _render_person_boxes(self, packet, frame_index=None, movenet_src_frame_index=None):
+        """Phase C1/C3: draw MoveNet person boxes with temporal render hysteresis.
+
+        C1 — a person's box coasts (keeps its last-good bbox) for up to
+        movenet.detection_hysteresis_frames frames when the ghost filter briefly drops the
+        detection, so the box no longer blinks on a 1-2 frame keypoint dip.
+        C3 — alert colour latches for the same window so single-frame evidence gaps do not
+        strobe the box red<->green.
+        RC-4 — skeleton lines are only drawn when the MoveNet result is fresh enough
+        (movenet.skeleton_max_age_frames): a cached pose re-rendered on a much newer frame
+        draws limbs at the old position and then visibly snaps when the next inference
+        lands. Boxes (padded, coarser) still coast; only the precise skeleton is gated.
+        Rendering-only: behavior, fusion, and decision paths are deliberately untouched, so
+        coasting can never fabricate an incident."""
+        from monitor_app.ai_engine import MotionOptimizedEngine
+
+        cam_id = packet.camera_id
+        hyst_frames = int(get_config("movenet", "detection_hysteresis_frames", 8))
+
+        # RC-4: skeleton freshness gate
+        skel_max_age = int(get_config("movenet", "skeleton_max_age_frames", 3))
+        skeleton_fresh = True
+        if frame_index is not None and movenet_src_frame_index is not None:
+            skeleton_fresh = (frame_index - movenet_src_frame_index) <= skel_max_age
+
+        cache = self.box_hysteresis.setdefault(cam_id, {})
+        present_ids = set()
+
+        for p in packet.tracked_persons:
+            if p.keypoints is None:
+                continue
+            # Restore MoveNet skeletal lines on the final frame (fresh detections only)
+            if skeleton_fresh and hasattr(self.engine, 'draw_skeleton'):
+                self.engine.draw_skeleton(packet.frame, p.keypoints, p.stable_id)
+
+            bbox = MotionOptimizedEngine.compute_bbox_from_keypoints(p.keypoints, packet.frame.shape)
+            if not bbox:
+                continue
+            p.bbox = bbox
+
+            raw_alert = self._compute_is_alert(packet, p)
+            prev = cache.get(p.stable_id, {})
+            if raw_alert:
+                alert_hold = hyst_frames
+            else:
+                alert_hold = max(0, int(prev.get("alert_hold", 0)) - 1)
+            is_alert = raw_alert or alert_hold > 0
+
+            cache[p.stable_id] = {"bbox": bbox, "is_alert": is_alert,
+                                  "alert_hold": alert_hold, "misses": 0}
+            present_ids.add(p.stable_id)
+            self._draw_person_box(packet.frame, bbox, p.stable_id, is_alert)
+
+        # C1 — coast recently-seen persons that dropped out this frame
+        # RC-3: skip-draw a coasted box that overlaps a LIVE person box above
+        # movenet.coast_dedup_iou — the stacked-box case where an ID churn leaves the
+        # old ID coasting on top of the same person's new live box. The cache entry
+        # still ages normally (misses/alert_hold), only the draw is suppressed; and
+        # this is render-only — packet.tracked_persons / behavior_evidence, which the
+        # behavior, fusion and decision paths consume, never contained coasted
+        # entries in the first place.
+        coast_thr = float(get_config("movenet", "coast_dedup_iou", 0.6))
+        live_boxes = [cache[sid]["bbox"] for sid in present_ids if cache.get(sid, {}).get("bbox")]
+        for sid in list(cache.keys()):
+            if sid in present_ids:
+                continue
+            entry = cache[sid]
+            entry["misses"] = int(entry.get("misses", 0)) + 1
+            if entry["misses"] > hyst_frames:
+                del cache[sid]
+                continue
+            entry["alert_hold"] = max(0, int(entry.get("alert_hold", 0)) - 1)
+            entry["is_alert"] = entry["alert_hold"] > 0
+            overlaps_live = any(
+                self._iou(entry["bbox"], lb) >= coast_thr for lb in live_boxes
+            )
+            if not overlaps_live:
+                self._draw_person_box(packet.frame, entry["bbox"], sid, entry["is_alert"])
 
     def _worker_loop(self):
         # 1. Load active settings and initialize AI engine
@@ -317,18 +471,14 @@ class CentralInferenceManager:
                                                 "contraband": last_y.get("detections", {}).get("contraband", []),
                                             },
                                             "processing_mode": "Power Saving (No Motion)",
-                                            "tracked_persons": last_m.get("tracked_persons", [])
+                                            "tracked_persons": last_m.get("tracked_persons", []),
+                                            "movenet_src_frame_index": last_m.get("frame_index"),
                                         }
                                         
                                         # Re-draw YOLO contraband boxes so they persist
-                                        import cv2
-                                        for det in res["detections"]["contraband"]:
-                                            name = det.get("name", "Unknown")
-                                            track_id = det.get("track_id", -1)
-                                            x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
-                                            cv2.rectangle(res["frame"], (x1, y1), (x2, y2), (0, 0, 255), 3)
-                                            cv2.putText(res["frame"], f"ALERT: {name.upper()} (ID: {track_id})", 
-                                                        (x1, max(0, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                        # (RC-2: same render-dedup helper as the live path)
+                                        self._draw_contraband_boxes(
+                                            res["frame"], res["detections"]["contraband"])
                             else:
                                 # Fallback: BasicMotionEngine or unknown engine type
                                 res = self.engine.process_frame(
@@ -401,34 +551,13 @@ class CentralInferenceManager:
                         if packet.behavior_evidence:
                             packet.alert_triggered = True
 
-                        import cv2
-                        from monitor_app.ai_engine import MotionOptimizedEngine
-                        for p in packet.tracked_persons:
-                            if p.keypoints is not None:
-                                # Restore MoveNet skeletal lines on the final frame
-                                if hasattr(self.engine, 'draw_skeleton'):
-                                    self.engine.draw_skeleton(packet.frame, p.keypoints, p.stable_id)
-                                    
-                                bbox = MotionOptimizedEngine.compute_bbox_from_keypoints(p.keypoints, packet.frame.shape)
-                                if bbox:
-                                    p.bbox = bbox
-                                    
-                                    # Color logic: check legacy detections via raw_person_id OR new evidence via stable_id
-                                    is_alert = False
-                                    for b_det in packet.detections.get("behavior", []):
-                                        if b_det.get("person_index") == p.raw_person_id and b_det.get("label") in ("Aggressive / Fighting", "Fast Movement"):
-                                            is_alert = True
-                                            break
-                                    if not is_alert:
-                                        for ev in packet.behavior_evidence:
-                                            if ev.stable_id == p.stable_id:
-                                                is_alert = True
-                                                break
-
-                                    color = (0, 0, 255) if is_alert else (0, 255, 0)
-                                    x1, y1, x2, y2 = bbox
-                                    cv2.rectangle(packet.frame, (x1, y1), (x2, y2), color, 2)
-                                    cv2.putText(packet.frame, f"ID {p.stable_id}", (x1, max(0, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                        # Phase C1/C3: person boxes with temporal render hysteresis
+                        # (RC-4: skeleton draw gated on MoveNet result freshness)
+                        self._render_person_boxes(
+                            packet,
+                            frame_index=frame_index,
+                            movenet_src_frame_index=res.get("movenet_src_frame_index"),
+                        )
 
                         # --- PHASE 5: FUSION, DECISION & ALERT ROUTING ---
                         try:

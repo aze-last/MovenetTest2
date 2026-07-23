@@ -25,7 +25,13 @@ class BehaviorEngine:
         if not packet.tracked_persons:
             return packet
 
-        # 1. Update stable tracking IDs
+        # 1. Update stable tracking IDs.
+        # C4 (deferred): update #2 of the per-camera tracker singleton (update #1 is in
+        # ai_engine._run_movenet_logic). This one runs every worker frame — including
+        # motion-gate-skipped frames where tracked_persons are re-emitted from the last MoveNet
+        # result — so it refreshes last_seen_frame and keeps tracks alive across skips. Removing
+        # it would strand tracks during skip streaks and force fresh IDs on reacquire (more
+        # flicker). Collapse of the double-update is deferred pending A4 field data.
         tracker = self._get_tracker(packet.camera_id)
         tracked_persons = tracker.update(packet.tracked_persons, frame_index)
         packet.tracked_persons = tracked_persons
