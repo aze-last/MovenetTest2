@@ -590,11 +590,11 @@ class MotionOptimizedEngine:
             tcfg = get_config("yolo", "tracker", {}) or {}
             doc = {
                 "tracker_type": "bytetrack",
-                "track_high_thresh": float(tcfg.get("track_high_thresh", 0.25)),
-                "track_low_thresh": float(tcfg.get("track_low_thresh", 0.1)),
-                "new_track_thresh": float(tcfg.get("new_track_thresh", 0.25)),
+                "track_high_thresh": float(tcfg.get("track_high_thresh", 0.50)),
+                "track_low_thresh": float(tcfg.get("track_low_thresh", 0.20)),
+                "new_track_thresh": float(tcfg.get("new_track_thresh", 0.40)),
                 "track_buffer": int(tcfg.get("track_buffer", 30)),
-                "match_thresh": float(tcfg.get("match_thresh", 0.8)),
+                "match_thresh": float(tcfg.get("match_thresh", 0.5)),
                 "fuse_score": bool(tcfg.get("fuse_score", True)),
             }
             out_dir = os.path.join(os.path.dirname(__file__), "models")

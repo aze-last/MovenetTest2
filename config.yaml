@@ -61,7 +61,7 @@ motion_gate:
   motion_gate_movenet_enabled: true
   motion_gate_yolo_enabled: false
 movenet:
-  bbox_kp_conf: 0.1
+  bbox_kp_conf: 0.25
   coast_dedup_iou: 0.6
   detection_hysteresis_frames: 30
   ghost_kp_conf: 0.25
@@ -81,10 +81,10 @@ yolo:
   tracker:
     fuse_score: true
     match_thresh: 0.5
-    new_track_thresh: 0.25
+    new_track_thresh: 0.40
     track_buffer: 60
-    track_high_thresh: 0.2
-    track_low_thresh: 0.05
+    track_high_thresh: 0.50
+    track_low_thresh: 0.20
   tracker_isolation: per_camera
   untracked_grid_px: 96
 
