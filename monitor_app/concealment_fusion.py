@@ -102,6 +102,7 @@ class ConcealmentFusionEngine:
                     hand=hand,
                     observations=hand_obs,
                     camera_stable_ids=camera_stable_ids,
+                    zone_camera_count=len(zone_cameras),
                 )
                 fused_results.append(fused)
 
@@ -139,6 +140,7 @@ class ConcealmentFusionEngine:
         hand: HandSide,
         observations: List[HandObservation],
         camera_stable_ids: Dict[str, int],
+        zone_camera_count: int = 0,
     ) -> FusedConcealmentObservation:
         visible = [
             o
@@ -172,7 +174,14 @@ class ConcealmentFusionEngine:
                 camera_stable_ids=camera_stable_ids,
             )
 
-        if len(concealed) >= self.min_supporting_cameras:
+        active_camera_count = zone_camera_count if zone_camera_count > 0 else len({o.camera_id for o in observations})
+        required_cameras = (
+            min(self.min_supporting_cameras, active_camera_count)
+            if active_camera_count > 0
+            else self.min_supporting_cameras
+        )
+
+        if len(concealed) >= required_cameras:
             conf = sum(o.confidence for o in concealed) / len(concealed)
             if conf >= self.min_fused_confidence:
                 return FusedConcealmentObservation(
@@ -186,7 +195,7 @@ class ConcealmentFusionEngine:
                     camera_stable_ids=camera_stable_ids,
                 )
 
-        if self.single_camera_insufficient and len(concealed) < self.min_supporting_cameras:
+        if self.single_camera_insufficient and len(concealed) < required_cameras:
             return FusedConcealmentObservation(
                 zone_id=zone_id,
                 subject_slot=subject_slot,

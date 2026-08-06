@@ -17,7 +17,6 @@ concealment:
     association_max_hip_distance_norm: 0.15
     fusion_stale_ms: 500
     min_frontal_quality: 0.6
-    min_frontal_supporting_cameras: 1
     min_fused_confidence: 0.75
     min_supporting_cameras: 2
     side_view_never_confirms: true

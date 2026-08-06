@@ -287,15 +287,75 @@ class CentralInferenceManager:
                 return True
         return False
 
-    def _draw_person_box(self, frame, bbox, stable_id, is_alert):
+    def _draw_person_box(self, frame, bbox, stable_id, is_alert, alert_types=None, hand_observations=None):
         import cv2
+        from monitor_app.config import get_concealment_config
+
         color = (0, 0, 255) if is_alert else (0, 255, 0)
         x1, y1, x2, y2 = bbox
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, f"ID {stable_id}", (x1, max(0, y1 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-    def _render_person_boxes(self, packet, frame_index=None, movenet_src_frame_index=None):
+        id_text = f"ID {stable_id}"
+        if is_alert and alert_types:
+            sorted_types = sorted({str(t).upper() for t in alert_types if t})
+            if sorted_types:
+                id_text = f"ID {stable_id} | {' | '.join(sorted_types)}"
+
+        cv2.putText(
+            frame,
+            id_text,
+            (x1, max(0, y1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+        )
+
+        if get_concealment_config("enabled", True) and hand_observations:
+            l_state = "Unknown"
+            r_state = "Unknown"
+            has_known = False
+            for obs in hand_observations:
+                state_val = (
+                    obs.state.value.capitalize()
+                    if hasattr(obs.state, "value")
+                    else str(obs.state).capitalize()
+                )
+                hand_val = (
+                    obs.hand.value
+                    if hasattr(obs.hand, "value")
+                    else str(obs.hand)
+                )
+                if hand_val == "left":
+                    l_state = state_val
+                    if state_val != "Unknown":
+                        has_known = True
+                elif hand_val == "right":
+                    r_state = state_val
+                    if state_val != "Unknown":
+                        has_known = True
+
+            if has_known:
+                badge_text = f"L: {l_state} | R: {r_state}"
+                yellow = (0, 255, 255)
+                badge_y = y1 + 18 if y1 + 22 < y2 else max(15, y1 - 30)
+                cv2.putText(
+                    frame,
+                    badge_text,
+                    (x1, badge_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    yellow,
+                    2,
+                )
+
+    def _render_person_boxes(
+        self,
+        packet,
+        frame_index=None,
+        movenet_src_frame_index=None,
+        hand_obs_by_sid=None,
+    ):
         """Phase C1/C3: draw MoveNet person boxes with temporal render hysteresis.
 
         C1 — a person's box coasts (keeps its last-good bbox) for up to
@@ -311,6 +371,9 @@ class CentralInferenceManager:
         coasting can never fabricate an incident."""
         from monitor_app.ai_engine import MotionOptimizedEngine
 
+        if hand_obs_by_sid is None:
+            hand_obs_by_sid = {}
+
         cam_id = packet.camera_id
         hyst_frames = int(get_config("movenet", "detection_hysteresis_frames", 8))
 
@@ -319,6 +382,17 @@ class CentralInferenceManager:
         skeleton_fresh = True
         if frame_index is not None and movenet_src_frame_index is not None:
             skeleton_fresh = (frame_index - movenet_src_frame_index) <= skel_max_age
+
+        alert_types_by_sid = {}
+        for ev in packet.behavior_evidence:
+            alert_types_by_sid.setdefault(ev.stable_id, []).append(ev.behavior_type.upper())
+        for b_det in packet.detections.get("behavior", []):
+            p_idx = b_det.get("person_index")
+            lbl = b_det.get("label")
+            if p_idx is not None and lbl:
+                for p in packet.tracked_persons:
+                    if p.raw_person_id == p_idx:
+                        alert_types_by_sid.setdefault(p.stable_id, []).append(str(lbl).upper())
 
         cache = self.box_hysteresis.setdefault(cam_id, {})
         present_ids = set()
@@ -343,10 +417,26 @@ class CentralInferenceManager:
                 alert_hold = max(0, int(prev.get("alert_hold", 0)) - 1)
             is_alert = raw_alert or alert_hold > 0
 
-            cache[p.stable_id] = {"bbox": bbox, "is_alert": is_alert,
-                                  "alert_hold": alert_hold, "misses": 0}
+            alert_types = alert_types_by_sid.get(p.stable_id, prev.get("alert_types", []))
+            hand_obs = hand_obs_by_sid.get(p.stable_id, prev.get("hand_obs", []))
+
+            cache[p.stable_id] = {
+                "bbox": bbox,
+                "is_alert": is_alert,
+                "alert_hold": alert_hold,
+                "misses": 0,
+                "alert_types": alert_types,
+                "hand_obs": hand_obs,
+            }
             present_ids.add(p.stable_id)
-            self._draw_person_box(packet.frame, bbox, p.stable_id, is_alert)
+            self._draw_person_box(
+                packet.frame,
+                bbox,
+                p.stable_id,
+                is_alert,
+                alert_types=alert_types,
+                hand_observations=hand_obs,
+            )
 
         # C1 — coast recently-seen persons that dropped out this frame
         # RC-3: skip-draw a coasted box that overlaps a LIVE person box above
@@ -372,7 +462,14 @@ class CentralInferenceManager:
                 self._iou(entry["bbox"], lb) >= coast_thr for lb in live_boxes
             )
             if not overlaps_live:
-                self._draw_person_box(packet.frame, entry["bbox"], sid, entry["is_alert"])
+                self._draw_person_box(
+                    packet.frame,
+                    entry["bbox"],
+                    sid,
+                    entry["is_alert"],
+                    alert_types=entry.get("alert_types", []),
+                    hand_observations=entry.get("hand_obs", []),
+                )
 
     def _worker_loop(self):
         # 1. Load active settings and initialize AI engine
@@ -519,10 +616,12 @@ class CentralInferenceManager:
 
                             classifier = get_hand_observation_classifier()
                             observations = []
+                            hand_obs_by_sid = {}
                             for person in packet.tracked_persons:
-                                observations.extend(
-                                    classifier.classify_person(person, frame_index)
-                                )
+                                p_obs = classifier.classify_person(person, frame_index)
+                                observations.extend(p_obs)
+                                if p_obs:
+                                    hand_obs_by_sid[person.stable_id] = p_obs
 
                             camera_fusion = get_camera_fusion()
                             camera_fusion.update_hand_observations(packet.camera_id, observations)
@@ -557,6 +656,7 @@ class CentralInferenceManager:
                             packet,
                             frame_index=frame_index,
                             movenet_src_frame_index=res.get("movenet_src_frame_index"),
+                            hand_obs_by_sid=hand_obs_by_sid if 'hand_obs_by_sid' in locals() else None,
                         )
 
                         # --- PHASE 5: FUSION, DECISION & ALERT ROUTING ---

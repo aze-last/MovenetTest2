@@ -266,3 +266,8 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
     - Set `track_low_thresh` to `0.05`.
 - **Verification:** Ran pytest suite — **39 passed** (`pytest tests/test_flicker_remediation.py`).
 
+
+## [2026-08-06] Concealment Fusion Single-Camera Fallback & Camera BBox Visual Overlay
+- **`monitor_app/concealment_fusion.py`** (Lines 102, 138, 173-188): Updated `_fuse_hand_observations()` to calculate camera threshold dynamically (`required_cameras = min(self.min_supporting_cameras, active_camera_count)`). Allows 1-camera zones to trigger single-camera concealment while preserving multi-camera requirements on 2+ camera setups.
+- **`config.yaml`** (Line 20): Removed dead configuration key `min_frontal_supporting_cameras`.
+- **`monitor_app/central_inference.py`** (Lines 290-380, 616-656): Updated `_draw_person_box()` and `_render_person_boxes()` to render bold behavior alert tags (e.g. `ID {stable_id} | CONCEALMENT`) on active alerts, and yellow per-hand observation badges (`L: Concealed | R: Visible`) per camera feed.
