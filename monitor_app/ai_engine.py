@@ -671,9 +671,9 @@ class MotionOptimizedEngine:
                           f"isolation={get_config('yolo', 'tracker_isolation', 'per_camera')}", flush=True)
 
                 try:
-                    results = model.track(res["frame"], persist=True, verbose=False,
-                                          imgsz=inference_imgsz, device=device,
-                                          tracker=self._get_tracker_yaml())
+                    results = model.predict(res["frame"], verbose=False,
+                                            imgsz=inference_imgsz, device=device)
+
                 except Exception as e:
                     print(f"[YOLO] CRITICAL: tracking failed on active model '{getattr(self, 'active_model_name', 'unknown')}': {e}")
                     import os

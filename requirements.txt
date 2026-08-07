@@ -18,3 +18,5 @@ tensorrt==11.1.0.106
 customtkinter
 psutil
 darkdetect
+pyyaml
+fpdf2

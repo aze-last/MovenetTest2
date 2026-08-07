@@ -72,21 +72,6 @@ performance:
   parallel_inference: true
   skip_redundant_motion: true
   submit_timeout_s: 3.0
-yolo:
-  hysteresis_dedup_iou: 0.5
-  inference_imgsz: 960
-  model_path: best.engine
-  model_path_fallback: best.pt
-  tracker:
-    fuse_score: true
-    match_thresh: 0.5
-    new_track_thresh: 0.40
-    track_buffer: 60
-    track_high_thresh: 0.50
-    track_low_thresh: 0.20
-  tracker_isolation: per_camera
-  untracked_grid_px: 96
-
 tracking:
   human_tracking:
     match_thresh: 0.5
@@ -101,5 +86,18 @@ tracking:
     - knife
     match_thresh: 0.5
     track_buffer: 45
-    track_thresh: 0.20
-
+    track_thresh: 0.2
+yolo:
+  hysteresis_dedup_iou: 0.5
+  inference_imgsz: 960
+  model_path: best.engine
+  model_path_fallback: best.pt
+  tracker:
+    fuse_score: true
+    match_thresh: 0.5
+    new_track_thresh: 0.4
+    track_buffer: 60
+    track_high_thresh: 0.5
+    track_low_thresh: 0.2
+  tracker_isolation: per_camera
+  untracked_grid_px: 96
