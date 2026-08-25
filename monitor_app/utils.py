@@ -35,6 +35,16 @@ def data_path(relative_path):
         
     return os.path.join(base_path, relative_path)
 
+def normalize_cam_id(cid) -> str:
+    """Normalize camera IDs (0, '0', '00', 'cam_0', 'cam01') to a clean canonical string ('0', '1', etc.)."""
+    if cid is None:
+        return "0"
+    s = str(cid).strip()
+    digits = "".join(c for c in s if c.isdigit())
+    if digits:
+        return str(int(digits))
+    return s.lower()
+
 # --- Constants & Config ---
 APP_TITLE = "CellWatch AI"
 WINDOW_SIZE = "1280x800"

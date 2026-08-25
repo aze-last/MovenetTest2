@@ -25,8 +25,8 @@ class IncidentRecorder:
     COOLDOWN = "COOLDOWN"
 
     def __init__(self, camera_id, recordings_dir="recordings", db_path="incidents.db", on_incident_callback=None):
-        self.camera_id = str(camera_id).zfill(2)
-        from monitor_app.utils import data_path
+        from monitor_app.utils import normalize_cam_id, data_path
+        self.camera_id = normalize_cam_id(camera_id)
         self.recordings_dir = data_path(recordings_dir) if not os.path.isabs(recordings_dir) else recordings_dir
         self.db_path = data_path(db_path) if not os.path.isabs(db_path) else db_path
         self.on_incident_callback = on_incident_callback
@@ -112,12 +112,14 @@ class IncidentRecorder:
             os.makedirs(self.recordings_dir)
 
     def handle_incident_start(self, camera_id, incident_id, event_type, frame, ai_results):
-        if str(camera_id).zfill(2) != self.camera_id:
+        from monitor_app.utils import normalize_cam_id
+        if normalize_cam_id(camera_id) != self.camera_id:
             return
         self.trigger_recording(event_type, [], frame, incident_id, ai_results)
 
     def handle_evidence_added(self, camera_id, incident_id, event_type, confidence_scores):
-        if str(camera_id).zfill(2) != self.camera_id:
+        from monitor_app.utils import normalize_cam_id
+        if normalize_cam_id(camera_id) != self.camera_id:
             return
         if self.state == self.RECORDING and self.current_event_id == incident_id:
             # Merge evidence name
@@ -130,7 +132,8 @@ class IncidentRecorder:
             self.confidence_scores.extend(confidence_scores)
 
     def handle_incident_stop(self, camera_id, incident_id):
-        if str(camera_id).zfill(2) != self.camera_id:
+        from monitor_app.utils import normalize_cam_id
+        if normalize_cam_id(camera_id) != self.camera_id:
             return
         if self.state == self.RECORDING and self.current_event_id == incident_id:
             self.stop_recording()
@@ -299,5 +302,8 @@ class IncidentRecorder:
             return f"RECORDING: {self.current_event_type}", utils.COLOR_ALERT
         elif self.state == self.COOLDOWN:
             remaining = int(self.cooldown_end_time - time.time())
-            return f"COOLDOWN ({max(0, remaining)}s)", "#FFA500"
+            if remaining <= 0:
+                self.state = self.IDLE
+                return "NORMAL", utils.COLOR_SUCCESS
+            return f"COOLDOWN ({remaining}s)", "#FFA500"
         return "NORMAL", utils.COLOR_SUCCESS

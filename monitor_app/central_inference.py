@@ -270,10 +270,12 @@ class CentralInferenceManager:
         for det in self._contraband_for_render(detections):
             name = det.get("name", "Unknown")
             track_id = det.get("track_id", -1)
+            conf = float(det.get("confidence", 0.0))
             x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.putText(frame, f"ALERT: {name.upper()} (ID: {track_id})",
-                        (x1, max(0, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            label_text = f"ALERT: {name.upper()} {int(conf*100)}% (THR: ≥30%) ID:{track_id}" if conf > 0 else f"ALERT: {name.upper()} (ID: {track_id})"
+            cv2.putText(frame, label_text,
+                        (x1, max(0, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
 
     def _compute_is_alert(self, packet, p):
         """Raw per-frame alert state for a person: legacy behavior detection (matched by

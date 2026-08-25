@@ -137,20 +137,20 @@ class MotionOptimizedEngine:
 
     def _set_logic_sensitivity(self, level, custom_values=None):
         if level == "high":
-            self.CONF_THR = 0.28
+            self.CONF_THR = 0.25
             self.AGG_THR = 0.08  # Normalized (8% of frame width/sec)
             self.ACTIVE_THR = 0.04
-            self.ALERT_FRAMES = 4
+            self.ALERT_FRAMES = 2
             self.motion_threshold = 4500
             self.motion_ratio = 0.009
             self.yolo_knife_conf = 0.30
             self.yolo_cell_conf = 0.30
             self.yolo_fallback_conf = 0.50
         elif level == "low":
-            self.CONF_THR = 0.38
+            self.CONF_THR = 0.18
             self.AGG_THR = 0.15
             self.ACTIVE_THR = 0.08
-            self.ALERT_FRAMES = 8
+            self.ALERT_FRAMES = 5
             self.motion_threshold = 6000
             self.motion_ratio = 0.012
             self.yolo_knife_conf = 0.40
@@ -167,10 +167,10 @@ class MotionOptimizedEngine:
             self.yolo_cell_conf = float(custom_values.get("yolo_cell_conf", 0.30))
             self.yolo_fallback_conf = float(custom_values.get("yolo_fallback_conf", 0.50))
         else:  # medium (default)
-            self.CONF_THR = 0.32
+            self.CONF_THR = 0.22
             self.AGG_THR = 0.10
             self.ACTIVE_THR = 0.05
-            self.ALERT_FRAMES = 6
+            self.ALERT_FRAMES = 3
             self.motion_threshold = 5000
             self.motion_ratio = 0.010
             self.yolo_knife_conf = 0.30
@@ -181,7 +181,7 @@ class MotionOptimizedEngine:
         """Hot-reload thresholds on a running engine without reinit."""
         with self.lock:
             self._set_logic_sensitivity(level, custom_values)
-            print(f"--- AI ENGINE: Profile switched to '{level}' ---")
+            print(f"--- AI ENGINE: Profile switched to '{level}' (CONF_THR={self.CONF_THR:.2f}) ---")
 
     def _setup_hardware(self):
         """Enable GPU for YOLO26s and force CPU for MoveNet to conserve VRAM."""

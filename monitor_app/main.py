@@ -261,7 +261,7 @@ class CellWatchApp(ctk.CTk):
                     text_color=self.NAV_PALETTE["text"],
                 )
 
-    def switch_screen(self, screen_name):
+    def switch_screen(self, screen_name, initial_incident_id=None):
         # Clear current screen
         for widget in self.container.winfo_children():
             # If it has a 'stop_monitoring' method, call it (for camera view)
@@ -278,6 +278,8 @@ class CellWatchApp(ctk.CTk):
                 self.container,
                 current_user=profile_store.get_display_name(self.current_user),
             )
+            if initial_incident_id:
+                screen.select_incident_by_id(initial_incident_id)
         elif screen_name == "Dashboard":
             screen = dashboard.DashboardScreen(self.container)
         elif screen_name == "Settings":

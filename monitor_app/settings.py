@@ -974,9 +974,12 @@ class SettingsScreen(ctk.CTkFrame):
                 from monitor_app.central_inference import get_inference_manager
                 engine = get_inference_manager().engine
                 if engine:
-                    engine._set_logic_sensitivity(profile, custom_vals)
-                    # Note: engine reads developer configs on-the-fly via get_config() so no need to push them
+                    engine.apply_profile(profile, custom_vals)
                     print(f"Applied AI settings live to central inference engine: profile={profile}")
+                
+                # Notify camera threads and listeners of profile change
+                from monitor_app.events import get_event_bus
+                get_event_bus().publish("AI_PROFILE_CHANGED", profile=profile, custom_values=custom_vals)
             except Exception as e:
                 print(f"Failed to live-apply AI settings: {e}")
 

@@ -266,6 +266,24 @@ class IncidentsScreen(ttk.Frame):
         self.tabview.set("Incident Handling & Validation")
         self.review_tab.load_incident(event_data)
 
+    def select_incident_by_id(self, incident_id):
+        """Auto-select and load a specific incident for immediate review."""
+        if not incident_id or not os.path.exists(self.db_path):
+            return
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM incidents WHERE event_id = ?", (incident_id,))
+            row = cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                data = dict(zip(columns, row))
+                self.tabview.set("Incident Handling & Validation")
+                self.review_tab.load_incident(data)
+            conn.close()
+        except Exception as e:
+            print(f"select_incident_by_id error: {e}")
+
     def on_incident_updated(self):
         self.log_tab.refresh_data()
         self.refresh_overview()

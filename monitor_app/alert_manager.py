@@ -150,9 +150,11 @@ class AlertManager:
         return self._health_state
 
     def _get_state(self, camera_id: str) -> IncidentState:
-        if camera_id not in self.camera_states:
-            self.camera_states[camera_id] = IncidentState(camera_id)
-        return self.camera_states[camera_id]
+        from monitor_app.utils import normalize_cam_id
+        norm_id = normalize_cam_id(camera_id)
+        if norm_id not in self.camera_states:
+            self.camera_states[norm_id] = IncidentState(norm_id)
+        return self.camera_states[norm_id]
 
     def handle_decision(self, camera_id: str, event_type: str, confidence_scores: list, frame, ai_results: dict):
         """Received a decision trigger event"""
@@ -163,8 +165,10 @@ class AlertManager:
     def handle_tick(self, camera_id: str):
         """Called regularly to allow state machine to progress timeouts"""
         with self.lock:
-            if camera_id in self.camera_states:
-                self.camera_states[camera_id].tick()
+            from monitor_app.utils import normalize_cam_id
+            norm_id = normalize_cam_id(camera_id)
+            if norm_id in self.camera_states:
+                self.camera_states[norm_id].tick()
 
 
 # Global Alert Manager Singleton

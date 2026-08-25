@@ -43,27 +43,42 @@ class DecisionEngine:
 
     def get_event_details(self, packet: EvidencePacket) -> Tuple[str, List[float]]:
         """
-        Extract standardized event type labels and confidence scores.
+        Extract standardized event type labels with threshold indicators and confidence scores.
         """
         detections = packet.detections
+        event_labels = []
 
-        # Parse behaviors (aggressive, suspicious, fast)
-        behaviors = [
-            d.get('label', 'Unknown') for d in detections.get('behavior', [])
-            if any(x in d.get('label', '') for x in ["Aggressive", "Suspicious", "Fast"])
-        ]
+        # Parse contraband items with confidence & threshold
+        for c in detections.get('contraband', []):
+            name = c.get('name', 'Item').capitalize()
+            conf = float(c.get('confidence', 0.0))
+            if conf > 0:
+                event_labels.append(f"{name} ({int(conf*100)}% ≥ 30%)")
+            else:
+                event_labels.append(name)
 
-        behavior_evidence_labels = [
-            evidence.behavior_type.capitalize()
-            for evidence in self._filter_behavior_evidence(packet.behavior_evidence)
-        ]
-        behaviors.extend(behavior_evidence_labels)
-        
-        # Parse contraband items
-        items = [d.get('name', 'Item') for d in detections.get('contraband', [])]
-        
+        # Parse behavior evidence with metrics & thresholds
+        for evidence in self._filter_behavior_evidence(packet.behavior_evidence):
+            b_type = evidence.behavior_type.capitalize()
+            conf = float(evidence.confidence)
+            if evidence.behavior_type == "concealment":
+                event_labels.append(f"Concealment ({int(conf*100)}% ≥ 75%)")
+            elif "aggression" in evidence.behavior_type.lower() or "fight" in evidence.behavior_type.lower():
+                speed = evidence.supporting_metrics.get("speed", 0.0) if evidence.supporting_metrics else conf
+                event_labels.append(f"Aggression (Speed: {speed:.2f} ≥ 0.10)")
+            else:
+                event_labels.append(f"{b_type} ({int(conf*100)}%)")
+
+        # Fallback to detections behavior if no behavior_evidence
+        if not event_labels:
+            for d in detections.get('behavior', []):
+                lbl = d.get('label', '')
+                if any(x in lbl for x in ["Aggressive", "Suspicious", "Fast"]):
+                    score = d.get('score', 0.0)
+                    event_labels.append(f"{lbl.split(':')[0].strip()} ({int(score*100)}%)")
+
         # Standardize event name
-        unique_labels = list(set([b.split(":")[0].strip() for b in behaviors] + items))
+        unique_labels = list(dict.fromkeys(event_labels))
         event_type = " + ".join(unique_labels) if unique_labels else "Alert"
         
         # Compile confidence scores

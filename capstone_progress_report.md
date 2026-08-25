@@ -275,3 +275,33 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
 ## [2026-08-07] YOLO ByteTracker Bypass Test for Bounding Box Flickering
 - **`monitor_app/ai_engine.py`** (Line 674): Replaced `model.track(..., tracker=self._get_tracker_yaml())` with `model.predict(...)`. Bypasses ByteTracker multi-frame association ID churn to test raw detection rendering stability.
 - **Purpose:** Test whether raw detection prevents bounding box flickering/blinking caused by ByteTracker track ID resetting.
+
+## [2026-08-17] Code Modification Checker & Architectural Subsystem Contract Tests
+## [2026-08-25] AI Engine Preset Alignment, Live Alert Card Highlights & Detection Preview Banner
+- **`monitor_app/ai_engine.py`** (Lines 138-185):
+  - Aligned `CONF_THR` values in `_set_logic_sensitivity()` to calibrated levels: High: `0.25`, Medium: `0.22`, Low: `0.18`. Previously, `Medium` enforced `0.32` and `Low` enforced `0.38`, causing MoveNet MultiPose (average confidence ~0.20-0.28) to reject all detected person keypoints when changing presets.
+  - Aligned `ALERT_FRAMES` to `2` (High), `3` (Medium), and `5` (Low).
+  - Updated `apply_profile()` to log the active `CONF_THR` upon hot-reload.
+- **`monitor_app/settings.py`** (Lines 972-985):
+  - Updated `save_settings()` to call `engine.apply_profile(profile, custom_vals)` instead of raw un-locked method call.
+  - Emitted `AI_PROFILE_CHANGED` event on `EventBus` to notify all subscribers of profile/threshold changes live.
+- **`monitor_app/utils.py`** (Lines 38-48):
+  - Added canonical `normalize_cam_id(cid)` helper function to standardize camera IDs across database, EventBus, and recorders.
+- **`monitor_app/alert_manager.py` & `monitor_app/incident_record.py`** (Lines 140-170 & Lines 25-140, 298-306):
+  - Normalized camera ID handling across `IncidentState`, `IncidentRecorder`, and EventBus handlers (`INCIDENT_START`, `EVIDENCE_ADDED`, `INCIDENT_STOP`).
+  - Added auto-expiration for `COOLDOWN` in `get_status_info()`.
+- **`monitor_app/decision.py`** (Lines 44-80):
+  - Enhanced `get_event_details()` to include detected confidence/speed alongside required threshold indicators (e.g. `Knife (88% ≥ 30%)`, `Concealment (88% ≥ 75%)`, `Aggression (Speed: 0.16 ≥ 0.10)`).
+- **`monitor_app/central_inference.py`** (Lines 267-278):
+  - Updated `_draw_contraband_boxes()` to render confidence vs threshold text on contraband alert bounding boxes (`ALERT: {NAME} {CONF}% (THR: ≥30%) ID:{TRACK_ID}`).
+- **`monitor_app/camera_view.py`** (Lines 42-90, 414-480, 800, 1285-1300):
+  - Added collapsible `alert_banner_frame` in `CameraMonitorScreen` displaying live alert snapshot thumbnail, camera name, event type with thresholds, and a "Review Incident ➔" button.
+  - Added dynamic canvas border highlighting to `CameraFeedWidget`: `RECORDING` (3px red `#f25c5c` border + `● REC`), `COOLDOWN` (2px amber `#ffa500` border + `⏳ COOLDOWN`), `NORMAL` (1px dark `#1e2c3a` border + `● NORMAL`).
+- **`monitor_app/incidents.py` & `monitor_app/main.py`** (Lines 266-285 & Lines 264-285):
+  - Added `select_incident_by_id(incident_id)` to `IncidentsScreen` and passed `initial_incident_id` in `switch_screen()` to enable instant 1-click navigation from Live Monitor to Incidents review.
+- **`C:\Users\ASUS\OneDrive\Desktop\MovenetTutorial` (Obsidian Vault)**:
+  - Created `Changelog/What's_New_2026-08-25.md` and synced `CLAUDE.md` and `GEMINI.md`.
+- **Verification:** Executed full test suite — **68 passed in 12.99s** (`pytest tests/`).
+
+
+

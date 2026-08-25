@@ -45,10 +45,24 @@ class LocalMotionGater:
     that mirrors the original MotionOptimizedEngine gating parameters.
     """
     def __init__(self):
-        # Load settings
-        ai_cfg = profile_store.get_ai_settings()
-        profile = ai_cfg.get("active_profile", "medium")
-        custom_vals = ai_cfg.get("custom_settings") if profile == "custom" else None
+        self.update_profile()
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=300, varThreshold=30, detectShadows=False
+        )
+        self.last_gray = None
+        
+        # Subscribe to profile updates
+        try:
+            from monitor_app.events import get_event_bus
+            get_event_bus().subscribe("AI_PROFILE_CHANGED", self._on_profile_event)
+        except Exception:
+            pass
+
+    def update_profile(self, profile=None, custom_vals=None):
+        if profile is None:
+            ai_cfg = profile_store.get_ai_settings()
+            profile = ai_cfg.get("active_profile", "medium")
+            custom_vals = ai_cfg.get("custom_settings") if profile == "custom" else None
         
         # Set parameters based on sensitivity
         if profile == "high":
@@ -64,10 +78,8 @@ class LocalMotionGater:
             self.motion_threshold = 5000
             self.motion_ratio = 0.010
 
-        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-            history=300, varThreshold=30, detectShadows=False
-        )
-        self.last_gray = None
+    def _on_profile_event(self, profile="medium", custom_values=None, **kwargs):
+        self.update_profile(profile, custom_values)
 
     def detect_motion(self, frame):
         if not CV2_AVAILABLE:
@@ -362,7 +374,17 @@ class CameraMonitorScreen(ttk.Frame):
 
         self.cameras = []
         self.grid_container = None
+        self.active_alert_incident_id = None
+        self._alert_banner_visible = False
+        self._alert_thumb_photo = None
+        self._alert_auto_dismiss_job = None
+
         self.create_widgets()
+
+        # Subscribe to detection & incident events
+        from monitor_app.events import get_event_bus
+        get_event_bus().subscribe("INCIDENT_START", self._on_incident_alert)
+        get_event_bus().subscribe("DECISION_TRIGGER", self._on_decision_alert)
 
     def create_widgets(self):
         # 1. Header Bar
@@ -403,11 +425,145 @@ class CameraMonitorScreen(ttk.Frame):
         )
         self.btn_dashboard.pack(side="right", padx=5)
 
+        # 2. Live Incident Alert Preview Banner (Collapsible)
+        self.alert_banner_frame = ctk.CTkFrame(
+            self,
+            fg_color="#220e11",
+            border_width=2,
+            border_color="#f25c5c",
+            corner_radius=12,
+            height=76
+        )
+        self.alert_banner_frame.pack_propagate(False)
+
+        # Snapshot Preview Thumbnail
+        self.alert_thumb_lbl = ctk.CTkLabel(
+            self.alert_banner_frame,
+            text="[Snapshot]",
+            width=90,
+            height=56,
+            fg_color="#0e151c",
+            corner_radius=8,
+            font=("Segoe UI", 10),
+            text_color="#8da1b4"
+        )
+        self.alert_thumb_lbl.pack(side="left", padx=12, pady=10)
+
+        # Text Details
+        text_wrap = ctk.CTkFrame(self.alert_banner_frame, fg_color="transparent")
+        text_wrap.pack(side="left", fill="both", expand=True, pady=8)
+
+        self.alert_title_lbl = ctk.CTkLabel(
+            text_wrap,
+            text="🚨 ACTIVE DETECTION ALERT",
+            font=("Segoe UI Bold", 13),
+            text_color="#f25c5c",
+            anchor="w"
+        )
+        self.alert_title_lbl.pack(anchor="w")
+
+        self.alert_sub_lbl = ctk.CTkLabel(
+            text_wrap,
+            text="Event details loading...",
+            font=("Segoe UI", 11),
+            text_color="#e1ebf5",
+            anchor="w"
+        )
+        self.alert_sub_lbl.pack(anchor="w", pady=(2, 0))
+
+        # Actions
+        btn_wrap = ctk.CTkFrame(self.alert_banner_frame, fg_color="transparent")
+        btn_wrap.pack(side="right", padx=14, pady=10)
+
+        self.btn_alert_review = ctk.CTkButton(
+            btn_wrap,
+            text="Review Incident ➔",
+            width=135,
+            height=36,
+            corner_radius=8,
+            fg_color="#f25c5c",
+            hover_color="#d64545",
+            font=("Segoe UI Bold", 11),
+            command=self._review_active_incident
+        )
+        self.btn_alert_review.pack(side="left", padx=(0, 8))
+
+        self.btn_alert_dismiss = ctk.CTkButton(
+            btn_wrap,
+            text="Dismiss",
+            width=70,
+            height=36,
+            corner_radius=8,
+            fg_color="#2b3947",
+            hover_color="#3d4f61",
+            font=("Segoe UI Semibold", 11),
+            command=self._dismiss_alert_banner
+        )
+        self.btn_alert_dismiss.pack(side="left")
+
         # 3. Camera Grid Container
         self.grid_container = ctk.CTkFrame(self, fg_color=self.PALETTE["bg"], corner_radius=0)
         self.grid_container.pack(fill="both", expand=True)
 
         self._load_feeds()
+
+    def _on_incident_alert(self, camera_id, incident_id, event_type, frame=None, ai_results=None, **kwargs):
+        """EventBus callback for confirmed incidents"""
+        self.after(0, lambda: self._show_alert_banner(camera_id, incident_id, event_type, frame))
+
+    def _on_decision_alert(self, camera_id, event_type, confidence_scores=None, frame=None, ai_results=None, **kwargs):
+        """EventBus callback for fast preliminary decision triggers"""
+        self.after(0, lambda: self._show_alert_banner(camera_id, getattr(self, "active_alert_incident_id", None), event_type, frame, confidence_scores))
+
+    def _show_alert_banner(self, camera_id, incident_id, event_type, frame=None, scores=None):
+        self.active_alert_incident_id = incident_id
+        
+        # Format title & subtitle with threshold indicators
+        self.alert_title_lbl.configure(text=f"🚨 ALERT: {event_type.upper()}")
+        
+        from datetime import datetime
+        time_str = datetime.now().strftime("%H:%M:%S")
+        sub_text = f"Camera {camera_id}  •  Detected at {time_str}"
+        self.alert_sub_lbl.configure(text=sub_text)
+
+        # Generate snapshot thumbnail
+        if frame is not None:
+            try:
+                import cv2
+                from PIL import Image, ImageTk
+                # Resize to thumbnail 90x56
+                thumb_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_thumb = Image.fromarray(thumb_rgb).resize((90, 56))
+                self._alert_thumb_photo = ctk.CTkImage(light_image=pil_thumb, dark_image=pil_thumb, size=(90, 56))
+                self.alert_thumb_lbl.configure(image=self._alert_thumb_photo, text="")
+            except Exception as e:
+                self.alert_thumb_lbl.configure(image=None, text="[Snapshot]")
+        else:
+            self.alert_thumb_lbl.configure(image=None, text="[Snapshot]")
+
+        # Show banner
+        if not self._alert_banner_visible:
+            self.alert_banner_frame.pack(side="top", fill="x", padx=16, pady=(10, 4), before=self.grid_container)
+            self._alert_banner_visible = True
+
+        # Auto-dismiss after 20 seconds of inactivity
+        if self._alert_auto_dismiss_job:
+            self.after_cancel(self._alert_auto_dismiss_job)
+        self._alert_auto_dismiss_job = self.after(20000, self._dismiss_alert_banner)
+
+    def _dismiss_alert_banner(self):
+        if self._alert_banner_visible:
+            self.alert_banner_frame.pack_forget()
+            self._alert_banner_visible = False
+        if self._alert_auto_dismiss_job:
+            self.after_cancel(self._alert_auto_dismiss_job)
+            self._alert_auto_dismiss_job = None
+
+    def _review_active_incident(self):
+        """Jump to Incidents screen with the current active alert incident loaded."""
+        root = self.winfo_toplevel()
+        if hasattr(root, "switch_screen"):
+            root.switch_screen("Incidents", initial_incident_id=self.active_alert_incident_id)
 
     def _poll_engine_ready(self):
         from monitor_app.central_inference import get_inference_manager
@@ -522,6 +678,15 @@ class CameraMonitorScreen(ttk.Frame):
         pass
 
     def stop_monitoring(self):
+        try:
+            from monitor_app.events import get_event_bus
+            get_event_bus().unsubscribe("INCIDENT_START", self._on_incident_alert)
+            get_event_bus().unsubscribe("DECISION_TRIGGER", self._on_decision_alert)
+        except Exception:
+            pass
+        if self._alert_auto_dismiss_job:
+            self.after_cancel(self._alert_auto_dismiss_job)
+            self._alert_auto_dismiss_job = None
         for cam in self.cameras:
             cam.stop()
         from monitor_app.central_inference import get_inference_manager
@@ -634,7 +799,7 @@ class CameraFeedWidget(ttk.Frame):
         )
         self.lbl_frame_counter.pack(side="right", padx=(0, 15))
 
-        self.canvas = tk.Canvas(self, bg="black", highlightthickness=0)
+        self.canvas = tk.Canvas(self, bg="black", highlightthickness=2, highlightbackground="#1e2c3a")
         self.canvas.pack(fill="both", expand=True, padx=2, pady=2)
 
         self.draw_placeholder()
@@ -869,7 +1034,14 @@ class CameraFeedWidget(ttk.Frame):
                 manager = get_inference_manager()
                 has_active = manager.has_active_tracks(str(self.camera_id))
                 
-                gate_active = getattr(self, "_motion_gate_enabled", False) or has_active
+                # Check if ungated override is active
+                from monitor_app.config import get_config
+                gate_cfg = get_config("motion_gate") or {}
+                movenet_gated = gate_cfg.get("motion_gate_movenet_enabled", True)
+                yolo_gated = gate_cfg.get("motion_gate_yolo_enabled", True)
+                ungated = (not movenet_gated) or (not yolo_gated)
+
+                gate_active = getattr(self, "_motion_gate_enabled", False) or has_active or ungated
                 
                 if gate_active:
                     # Initialize initial packet and submit to centralized GPU queue
@@ -1115,6 +1287,14 @@ class CameraFeedWidget(ttk.Frame):
         # Show status from the recorder (NORMAL, RECORDING, or COOLDOWN)
         status_text, status_color = self.recorder.get_status_info()
         self.lbl_status.configure(text=status_text, foreground=status_color)
+        
+        # Dynamically highlight card canvas border based on state
+        if self.recorder.state == self.recorder.RECORDING:
+            self.canvas.configure(highlightthickness=3, highlightbackground="#f25c5c")
+        elif self.recorder.state == self.recorder.COOLDOWN:
+            self.canvas.configure(highlightthickness=2, highlightbackground="#ffa500")
+        else:
+            self.canvas.configure(highlightthickness=1, highlightbackground="#1e2c3a")
         
         # Update global alert state
         utils.GlobalState.set_alert(self.camera_id, self.recorder.state == self.recorder.RECORDING)
