@@ -92,6 +92,35 @@ class DecisionEngine:
         
         return event_type, confidence_scores
 
+    def get_severity(self, packet: EvidencePacket) -> str:
+        """
+        Determine standardized severity level (CRITICAL, HIGH, MEDIUM, LOW).
+        """
+        detections = packet.detections
+        has_contraband = False
+        for c in detections.get('contraband', []):
+            name = c.get('name', '').lower()
+            if any(k in name for k in ['cellphone', 'phone', 'knife']):
+                has_contraband = True
+                break
+
+        has_behavior = False
+        if packet.behavior_evidence:
+            for b in self._filter_behavior_evidence(packet.behavior_evidence):
+                b_type = b.behavior_type.lower()
+                if any(k in b_type for k in ["aggression", "aggressive", "fight", "conceal", "fast"]):
+                    has_behavior = True
+                    break
+
+        if has_contraband and has_behavior:
+            return "CRITICAL"
+        elif has_behavior:
+            return "HIGH"
+        elif has_contraband:
+            return "MEDIUM"
+        return "LOW"
+
+
     def generate_incident_record(self, packet: EvidencePacket, session_id: str, current_frame: int, video_time_str: str):
         from monitor_app.evidence import IncidentRecord, IncidentType, SnapshotResult
         

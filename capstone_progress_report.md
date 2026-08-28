@@ -303,5 +303,32 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
   - Created `Changelog/What's_New_2026-08-25.md` and synced `CLAUDE.md` and `GEMINI.md`.
 - **Verification:** Executed full test suite — **68 passed in 12.99s** (`pytest tests/`).
 
+## [2026-08-28] IDE Inspection Remediation & BenchmarkDialog Wrapper Integration
+- **`monitor_app/benchmark/benchmark_ui.py`** [NEW] (Lines 1-25):
+  - Created `BenchmarkDialog(ctk.CTkToplevel)` wrapper dialog hosting `ValidationCenterScreen` to resolve unresolved reference and missing module warning when launched via `CellWatchApp._launch_benchmark()` and tools menu.
+- **`monitor_app/benchmark/__init__.py`** (Line 3):
+  - Exported `BenchmarkDialog` from `monitor_app.benchmark.benchmark_ui`.
+- **`monitor_app/main.py`** (Lines 98-106, 312-320, 419-425):
+  - Initialized instance attributes (`self.logo_photo`, `self._tools_popup`, `self._tools_btn`, `self._tools_menu_open`, `self.active_screen_widget`) inside `__init__` to satisfy class attribute declaration rules.
+  - Assigned `self.active_screen_widget = screen` in `switch_screen()` to maintain explicit screen lifecycle tracking.
+  - Linked `_launch_benchmark()` to use `BenchmarkDialog(self)`.
+- **Verification:** Executed pytest suite — **46 passed in 9.45s** (`pytest tests/`).
 
+## [2026-08-28] Decision & AlertManager Alignment with Non-Blocking Audio Alert Sound
+- **`config.yaml`** (Lines 6-20):
+  - Added `audio_alerts` configuration block (`enabled: true`, `min_interval: 3.0`, `frequency_hz: 1200`, `duration_ms: 250`, `severity_pitch_map` for `CRITICAL`, `HIGH`, `MEDIUM`).
+- **`monitor_app/decision.py`** (Lines 94-124):
+  - Added `get_severity(packet)` method to `DecisionEngine` calculating standardized severity level (`CRITICAL` for contraband+behavior, `HIGH` for behavior, `MEDIUM` for contraband, `LOW` otherwise).
+- **`monitor_app/central_inference.py`** (Lines 686-694):
+  - Evaluated `decision_engine.get_severity(packet)` and propagated `severity` into the `DECISION_TRIGGER` EventBus payload.
+- **`monitor_app/alert_manager.py`** (Lines 11-88, 105-197, 214-259):
+  - Added `SoundAlertManager` class: thread-safe, asynchronous Windows audio alert service running on daemon threads using `winsound.Beep` and `MessageBeep` fallback with configurable frequency, duration, and pitch maps.
+  - Implemented rate limiting (`min_interval = 3.0s`) to prevent audio spam or sound queue stacking.
+  - Updated `IncidentState` and `AlertManager.handle_decision` to track `highest_severity` and pass `severity` through `INCIDENT_START` and `EVIDENCE_ADDED` events.
+  - Connected `get_sound_alert_manager().play_alert(self.highest_severity)` on incident confirmation.
+- **`monitor_app/camera_view.py`** (Lines 509-524):
+  - Updated `_on_incident_alert`, `_on_decision_alert`, and `_show_alert_banner` to render the active severity badge (e.g. `🚨 ALERT [CRITICAL]: ...`) in the live preview banner.
+- **`tests/test_audio_alerts.py`** [NEW] (Lines 1-52):
+  - Added unit test suite verifying `SoundAlertManager` rate limiting and `DecisionEngine.get_severity()` calculation across multiple detection types.
+- **Verification:** Executed full test suite — **67 passed in 11.76s** (`pytest tests/`).
 

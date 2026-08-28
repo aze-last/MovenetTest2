@@ -1,3 +1,4 @@
+import sys
 import threading
 import time
 from enum import Enum
@@ -7,6 +8,82 @@ from monitor_app.events import get_event_bus
 from monitor_app.health import ComponentState
 
 logger = get_module_logger("Alert Manager")
+
+# Audio alert engine (Windows native / winsound fallback)
+try:
+    import winsound
+    WINSOUND_AVAILABLE = True
+except ImportError:
+    winsound = None
+    WINSOUND_AVAILABLE = False
+
+
+class SoundAlertManager:
+    """
+    Asynchronous, rate-limited institutional audio alert engine.
+    Plays distinct audio tones for security incidents without blocking UI or inference.
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.last_played_time = 0.0
+        self._load_config()
+
+    def _load_config(self):
+        cfg = get_config("audio_alerts") or {}
+        self.enabled = cfg.get("enabled", True)
+        self.min_interval = float(cfg.get("min_interval", 3.0))
+        self.default_freq = int(cfg.get("frequency_hz", 1200))
+        self.default_duration = int(cfg.get("duration_ms", 250))
+        self.pitch_map = cfg.get("severity_pitch_map", {
+            "CRITICAL": [1500, 1800],
+            "HIGH": [1200, 1400],
+            "MEDIUM": [900],
+        })
+
+    def play_alert(self, severity: str = "MEDIUM"):
+        """
+        Trigger asynchronous audio beep for the specified severity level.
+        Rate-limited by min_interval.
+        """
+        if not self.enabled:
+            return
+
+        now = time.time()
+        with self.lock:
+            if now - self.last_played_time < self.min_interval:
+                return
+            self.last_played_time = now
+
+        # Launch playback in background daemon thread
+        threading.Thread(target=self._play_worker, args=(severity,), daemon=True).start()
+
+    def _play_worker(self, severity: str):
+        if not WINSOUND_AVAILABLE or winsound is None:
+            return
+
+        try:
+            tones = self.pitch_map.get(severity.upper(), [self.default_freq])
+            if isinstance(tones, int):
+                tones = [tones]
+            
+            dur = max(50, int(self.default_duration / max(1, len(tones))))
+            for freq in tones:
+                winsound.Beep(int(freq), dur)
+                time.sleep(0.02)
+        except Exception as e:
+            # Fallback to system message beep
+            try:
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            except Exception:
+                pass
+            logger.debug(f"Audio alert playback notice: {e}")
+
+
+_global_sound_alert = SoundAlertManager()
+
+def get_sound_alert_manager() -> SoundAlertManager:
+    return _global_sound_alert
+
 
 class HysteresisState(Enum):
     NOT_SEEN = "NOT_SEEN"
@@ -26,6 +103,7 @@ class IncidentState:
         self.state = HysteresisState.IDLE
         self.incident_id = "-"
         self.accumulated_evidence = set()
+        self.highest_severity = "LOW"
         self.first_detected = 0.0
         self.last_detected = 0.0
         self.cooldown_expiration = 0.0
@@ -34,9 +112,17 @@ class IncidentState:
         self.merge_window = get_config("incident_merging", "merge_window", 10.0)
         self.default_cooldown = get_config("alert_cooldowns", "default", 25.0)
 
-    def update(self, event_type: str, confidence_scores: list, frame, ai_results: dict):
+    def _update_severity(self, new_severity: str):
+        priority = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
+        curr_p = priority.get(self.highest_severity.upper(), 0)
+        new_p = priority.get(new_severity.upper(), 0)
+        if new_p >= curr_p:
+            self.highest_severity = new_severity.upper()
+
+    def update(self, event_type: str, confidence_scores: list, frame, ai_results: dict, severity: str = "MEDIUM"):
         now = time.time()
         self.last_detected = now
+        self._update_severity(severity)
         
         # If IDLE or NOT_SEEN, start PENDING
         if self.state in (HysteresisState.IDLE, HysteresisState.NOT_SEEN):
@@ -58,13 +144,14 @@ class IncidentState:
             self.state = HysteresisState.MAINTAINED
             if event_type not in self.accumulated_evidence:
                 self.accumulated_evidence.add(event_type)
-                logger.info(f"Evidence Added | Type: {event_type}", camera_id=self.camera_id, incident_id=self.incident_id)
+                logger.info(f"Evidence Added | Type: {event_type} | Severity: {self.highest_severity}", camera_id=self.camera_id, incident_id=self.incident_id)
                 get_event_bus().publish(
                     "EVIDENCE_ADDED",
                     camera_id=self.camera_id,
                     incident_id=self.incident_id,
                     event_type=event_type,
-                    confidence_scores=confidence_scores
+                    confidence_scores=confidence_scores,
+                    severity=self.highest_severity
                 )
         
         elif self.state == HysteresisState.COOLDOWN:
@@ -91,17 +178,21 @@ class IncidentState:
         self.incident_id = f"INC_{date_str}_{time_str}_{self.camera_id}"
         
         joined_evidence = " + ".join(list(self.accumulated_evidence))
-        logger.info(f"Incident Created | Type: {joined_evidence}", camera_id=self.camera_id, incident_id=self.incident_id)
+        logger.info(f"Incident Created | Type: {joined_evidence} | Severity: {self.highest_severity}", camera_id=self.camera_id, incident_id=self.incident_id)
         
-        # Publish Event to Recorder
+        # Publish Event to Recorder & UI
         get_event_bus().publish(
             "INCIDENT_START", 
             camera_id=self.camera_id, 
             incident_id=self.incident_id, 
             event_type=joined_evidence, 
+            severity=self.highest_severity,
             frame=frame, 
             ai_results=ai_results
         )
+
+        # Trigger Institutional Audio Alert
+        get_sound_alert_manager().play_alert(self.highest_severity)
 
     def tick(self):
         """Called periodically or per-frame to process timeouts"""
@@ -121,6 +212,7 @@ class IncidentState:
             if now - self.last_detected > self.merge_window:
                 self.state = HysteresisState.IDLE
                 self.accumulated_evidence.clear()
+                self.highest_severity = "LOW"
                 logger.info(f"Pending timeout -> IDLE", camera_id=self.camera_id)
 
         elif self.state == HysteresisState.COOLDOWN:
@@ -128,6 +220,7 @@ class IncidentState:
                 self.state = HysteresisState.IDLE
                 self.incident_id = "-"
                 self.accumulated_evidence.clear()
+                self.highest_severity = "LOW"
                 logger.info(f"Cooldown Finished -> IDLE", camera_id=self.camera_id)
 
 
@@ -156,13 +249,13 @@ class AlertManager:
             self.camera_states[norm_id] = IncidentState(norm_id)
         return self.camera_states[norm_id]
 
-    def handle_decision(self, camera_id: str, event_type: str, confidence_scores: list, frame, ai_results: dict):
+    def handle_decision(self, camera_id: str, event_type: str, confidence_scores: list, frame, ai_results: dict, severity: str = "MEDIUM", **kwargs):
         """Received a decision trigger event"""
         with self.lock:
             state = self._get_state(camera_id)
-            state.update(event_type, confidence_scores, frame, ai_results)
+            state.update(event_type, confidence_scores, frame, ai_results, severity=severity)
 
-    def handle_tick(self, camera_id: str):
+    def handle_tick(self, camera_id: str, **kwargs):
         """Called regularly to allow state machine to progress timeouts"""
         with self.lock:
             from monitor_app.utils import normalize_cam_id
@@ -176,3 +269,4 @@ _global_alert_manager = AlertManager()
 
 def get_alert_manager() -> AlertManager:
     return _global_alert_manager
+

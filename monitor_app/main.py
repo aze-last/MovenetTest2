@@ -95,10 +95,15 @@ class CellWatchApp(ctk.CTk):
         # Start periodic telemetry event ticks
         self._schedule_telemetry_ticks()
         
-        # Placeholder for current user
+        # Placeholder for current user and active screen
         self.current_user = None
         self.current_screen = None
+        self.active_screen_widget = None
         self.nav_buttons = {}
+        self.logo_photo = None
+        self._tools_menu_open = False
+        self._tools_popup = None
+        self._tools_btn = None
         
         # Main container for all screens
         self.container = tk.Frame(self, bg=utils.COLOR_BG_DARK)
@@ -114,11 +119,11 @@ class CellWatchApp(ctk.CTk):
         # Clear container
         for widget in self.container.winfo_children():
             widget.destroy()
-            
+    
         if self.nav_bar:
-            self.nav_bar.destroy()
-            self.nav_bar = None
-            
+             self.nav_bar.destroy()
+             self.nav_bar = None
+    
         self.refresh_branding(rebuild_nav=False)
         login_screen = auth.LoginScreen(self.container, on_login_success=self.on_login_success)
         login_screen.pack(fill="both", expand=True)
@@ -307,10 +312,12 @@ class CellWatchApp(ctk.CTk):
                    import monitor_app.reports as rpt
                    screen = rpt.ReportsScreen(self.container)
                except:
-                   lbl = ttk.Label(self.container, text=f"{screen_name} Screen (Under Construction)", style="Header.TLabel")
-                   lbl.place(relx=0.5, rely=0.5, anchor="center")
-                   return
+                    lbl = ttk.Label(self.container, text=f"{screen_name} Screen (Under Construction)", style="Header.TLabel")
+                    lbl.place(relx=0.5, rely=0.5, anchor="center")
+                    self.active_screen_widget = lbl
+                    return
 
+        self.active_screen_widget = screen
         self.current_screen = screen_name
         self._set_active_nav(screen_name)
 

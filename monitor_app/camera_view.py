@@ -507,19 +507,20 @@ class CameraMonitorScreen(ttk.Frame):
 
         self._load_feeds()
 
-    def _on_incident_alert(self, camera_id, incident_id, event_type, frame=None, ai_results=None, **kwargs):
+    def _on_incident_alert(self, camera_id, incident_id, event_type, frame=None, ai_results=None, severity=None, **kwargs):
         """EventBus callback for confirmed incidents"""
-        self.after(0, lambda: self._show_alert_banner(camera_id, incident_id, event_type, frame))
+        self.after(0, lambda: self._show_alert_banner(camera_id, incident_id, event_type, frame, severity=severity))
 
-    def _on_decision_alert(self, camera_id, event_type, confidence_scores=None, frame=None, ai_results=None, **kwargs):
+    def _on_decision_alert(self, camera_id, event_type, confidence_scores=None, frame=None, ai_results=None, severity=None, **kwargs):
         """EventBus callback for fast preliminary decision triggers"""
-        self.after(0, lambda: self._show_alert_banner(camera_id, getattr(self, "active_alert_incident_id", None), event_type, frame, confidence_scores))
+        self.after(0, lambda: self._show_alert_banner(camera_id, getattr(self, "active_alert_incident_id", None), event_type, frame, confidence_scores, severity=severity))
 
-    def _show_alert_banner(self, camera_id, incident_id, event_type, frame=None, scores=None):
+    def _show_alert_banner(self, camera_id, incident_id, event_type, frame=None, scores=None, severity=None):
         self.active_alert_incident_id = incident_id
         
-        # Format title & subtitle with threshold indicators
-        self.alert_title_lbl.configure(text=f"🚨 ALERT: {event_type.upper()}")
+        # Format title & subtitle with threshold indicators & severity
+        sev_tag = f" [{severity}]" if severity else ""
+        self.alert_title_lbl.configure(text=f"🚨 ALERT{sev_tag}: {event_type.upper()}")
         
         from datetime import datetime
         time_str = datetime.now().strftime("%H:%M:%S")

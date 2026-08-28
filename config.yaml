@@ -3,6 +3,21 @@ alert_cooldowns:
   default: 25.0
   fight: 30.0
   knife: 60.0
+audio_alerts:
+  duration_ms: 250
+  enabled: true
+  frequency_hz: 1200
+  min_interval: 3.0
+  severity_pitch_map:
+    CRITICAL:
+    - 1500
+    - 1800
+    HIGH:
+    - 1200
+    - 1400
+    MEDIUM:
+    - 900
+
 camera_reconnect:
   factor: 2.0
   initial_backoff: 1.0

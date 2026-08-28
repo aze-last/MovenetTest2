@@ -684,11 +684,13 @@ class CentralInferenceManager:
                             if decision_engine.evaluate_trigger(packet):
                                 # 3. Command Alert execution via Event Bus
                                 evt_type, conf_scores = decision_engine.get_event_details(packet)
+                                severity = decision_engine.get_severity(packet)
                                 get_event_bus().publish(
                                     "DECISION_TRIGGER",
                                     camera_id=packet.camera_id,
                                     event_type=evt_type,
                                     confidence_scores=conf_scores,
+                                    severity=severity,
                                     frame=packet.frame,
                                     ai_results=res
                                 )
