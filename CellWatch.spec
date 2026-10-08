@@ -18,7 +18,7 @@ datas = [
 datas += collect_data_files('customtkinter')
 
 hiddenimports = [
-    'tkinter', 'tkinter.ttk', '_tkinter', 'PIL._tkinter_finder'
+    'tkinter', 'tkinter.ttk', '_tkinter', 'PIL._tkinter_finder', 'platformdirs'
 ]
 hiddenimports += collect_submodules('onnxruntime')
 

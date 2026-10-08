@@ -2,6 +2,7 @@ import os
 import sys
 import random
 import time
+import shutil
 import tkinter as tk
 from tkinter import ttk
 
@@ -20,20 +21,114 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
-def data_path(relative_path):
-    """
-    Get the absolute path for read-write application data.
-    Ensures data survives when PyInstaller closes (parallel to sys.executable).
+_LEGACY_MIGRATION_DONE = False
+
+def get_user_data_dir() -> str:
+    r"""
+    Returns the absolute path to the writeable user application data directory.
+    In frozen production, returns %LocalAppData%\CellWatchAI.
+    In development, returns the project root.
     """
     if getattr(sys, 'frozen', False):
-        # We are running in a bundle (PyInstaller)
-        # Store data parallel to the .exe file
-        base_path = os.path.dirname(sys.executable)
+        try:
+            import platformdirs
+            base_path = platformdirs.user_data_dir("CellWatchAI", appauthor=False)
+        except Exception:
+            base_path = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "CellWatchAI")
+        os.makedirs(base_path, exist_ok=True)
+        return base_path
     else:
-        # We are running in a normal Python environment
-        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def data_path(relative_path: str) -> str:
+    r"""
+    Get the absolute path for read-write application data.
+    In production (frozen), data is stored in %LocalAppData%\CellWatchAI to ensure
+    safe user write access under Program Files and survive application updates.
+    In development, data is stored relative to the project root.
+    Fast path resolution without synchronous migration overhead.
+    """
+    base_path = get_user_data_dir()
     return os.path.join(base_path, relative_path)
+
+def migrate_legacy_data(legacy_root: str = None, target_root: str = None) -> list:
+    r"""
+    Migrate existing databases and runtime directories from legacy locations
+    (e.g. next to the frozen executable in Program Files or legacy AppData)
+    into the active writeable data directory.
+
+    Safe to call multiple times (guarded by _LEGACY_MIGRATION_DONE).
+    Handles both files (app_state.db, incidents.db) and directories
+    (recordings, exports, updates).
+    """
+    global _LEGACY_MIGRATION_DONE
+    migrated = []
+
+    if target_root is None:
+        target_root = get_user_data_dir()
+
+    candidate_legacy_roots = []
+    if legacy_root is not None:
+        candidate_legacy_roots.append(legacy_root)
+    else:
+        if getattr(sys, 'frozen', False):
+            # Check next to executable
+            exe_dir = os.path.dirname(sys.executable)
+            candidate_legacy_roots.append(exe_dir)
+            # Also check old %LocalAppData%\CellWatch if different from CellWatchAI
+            old_appdata = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "CellWatch")
+            if os.path.exists(old_appdata) and os.path.normpath(old_appdata) != os.path.normpath(target_root):
+                candidate_legacy_roots.append(old_appdata)
+
+    if not candidate_legacy_roots:
+        _LEGACY_MIGRATION_DONE = True
+        return migrated
+
+    items_to_migrate = [
+        "app_state.db",
+        "incidents.db",
+        "recordings",
+        "exports",
+        "updates"
+    ]
+
+    for cand_root in candidate_legacy_roots:
+        if not os.path.exists(cand_root) or os.path.normpath(cand_root) == os.path.normpath(target_root):
+            continue
+
+        for item in items_to_migrate:
+            src = os.path.join(cand_root, item)
+            dst = os.path.join(target_root, item)
+
+            if not os.path.exists(src):
+                continue
+
+            try:
+                if os.path.isfile(src):
+                    if not os.path.exists(dst):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(src, dst)
+                        migrated.append(item)
+                elif os.path.isdir(src):
+                    if not os.path.exists(dst):
+                        shutil.copytree(src, dst)
+                        migrated.append(item)
+                    else:
+                        for root, _, files in os.walk(src):
+                            rel_dir = os.path.relpath(root, src)
+                            dest_dir = os.path.join(dst, rel_dir)
+                            os.makedirs(dest_dir, exist_ok=True)
+                            for f in files:
+                                src_f = os.path.join(root, f)
+                                dst_f = os.path.join(dest_dir, f)
+                                if not os.path.exists(dst_f):
+                                    shutil.copy2(src_f, dst_f)
+                                    migrated.append(os.path.join(item, rel_dir, f) if rel_dir != "." else os.path.join(item, f))
+            except Exception as e:
+                print(f"[Warning] Failed to migrate legacy item '{item}' from {src}: {e}")
+
+    _LEGACY_MIGRATION_DONE = True
+    return migrated
 
 def normalize_cam_id(cid) -> str:
     """Normalize camera IDs (0, '0', '00', 'cam_0', 'cam01') to a clean canonical string ('0', '1', etc.)."""

@@ -20,3 +20,4 @@ psutil
 darkdetect
 pyyaml
 fpdf2
+platformdirs>=4.0.0

@@ -9,6 +9,20 @@ from PIL import Image
 
 from monitor_app.evidence import TrackedPerson
 from monitor_app.config import get_config
+from monitor_app.utils import resource_path
+
+
+def get_models_dir():
+    """
+    Returns absolute path to models directory.
+    Checks resource_path (for PyInstaller bundle / dev root) first,
+    falling back to module-local models directory.
+    """
+    candidate = resource_path(os.path.join("monitor_app", "models"))
+    if os.path.exists(candidate):
+        return candidate
+    local_candidate = os.path.join(os.path.dirname(__file__), "models")
+    return local_candidate
 
 
 # ==========================================
@@ -206,10 +220,11 @@ class MotionOptimizedEngine:
 
     def _load_models(self):
         """Clean modular loading for explanation."""
+        model_dir = get_models_dir()
         if ONNX_AVAILABLE:
             print("Loading MoveNet MultiPose (behavior engine)...")
             try:
-                model_path = os.path.join(os.path.dirname(__file__), "models", "movenet_multipose.onnx")
+                model_path = os.path.join(model_dir, "movenet_multipose.onnx")
                 if os.path.exists(model_path):
                     self.movenet = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
                     print(f"MoveNet loaded from ONNX path: {model_path}")
@@ -223,7 +238,6 @@ class MotionOptimizedEngine:
         if self.enable_yolo:
             from monitor_app.config import get_config
 
-            model_dir = os.path.join(os.path.dirname(__file__), "models")
             primary_name = get_config("yolo", "model_path", "best.engine")
             fallback_name = get_config("yolo", "model_path_fallback", "best.pt")
 
@@ -676,8 +690,7 @@ class MotionOptimizedEngine:
 
                 except Exception as e:
                     print(f"[YOLO] CRITICAL: tracking failed on active model '{getattr(self, 'active_model_name', 'unknown')}': {e}")
-                    import os
-                    model_dir = os.path.join(os.path.dirname(__file__), "models")
+                    model_dir = get_models_dir()
                     fallback_path = os.path.join(model_dir, get_config("yolo", "model_path_fallback", "best.pt"))
                     if os.path.exists(fallback_path) and not getattr(self, '_yolo_is_reloading', False):
                         self._yolo_is_reloading = True

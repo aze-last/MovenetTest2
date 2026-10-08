@@ -454,5 +454,6 @@ class CellWatchApp(ctk.CTk):
         super().destroy()
 
 if __name__ == "__main__":
+    utils.migrate_legacy_data()
     app = CellWatchApp()
     app.mainloop()

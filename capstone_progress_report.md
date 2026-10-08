@@ -330,5 +330,36 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
   - Updated `_on_incident_alert`, `_on_decision_alert`, and `_show_alert_banner` to render the active severity badge (e.g. `🚨 ALERT [CRITICAL]: ...`) in the live preview banner.
 - **`tests/test_audio_alerts.py`** [NEW] (Lines 1-52):
   - Added unit test suite verifying `SoundAlertManager` rate limiting and `DecisionEngine.get_severity()` calculation across multiple detection types.
-- **Verification:** Executed full test suite — **67 passed in 11.76s** (`pytest tests/`).
+
+## [2026-10-08] Track A: Inno Setup Packaging Pipeline & Installer Prerequisites (Fix-First Remediation)
+- **Version Baseline Justification (`monitor_app/__init__.py` Line 1):**
+  - Updated `__version__ = "1.0.0"`.
+  - **Justification:** Marks the graduation from the initial development prototype (`0.1.0`) to the production-ready Release Candidate baseline (`1.0.0`) for deployment in Philippine BJMP jail cells. Provides the single-source-of-truth version string consumed by PyInstaller, Inno Setup (`/DMyAppVersion`), and update manifests.
+- **Spec Dependency & Polars Restoration (`CellWatch.spec` Lines 20–35):**
+  - **CRITICAL Fix:** Removed `polars` and `_polars_runtime_32` from PyInstaller `excludes`. Ultralytics hard-depends on Polars for dataset structures and telemetry; excluding it would break YOLO contraband detection in frozen builds. Payload slimming is deferred to a dedicated post-release track per handoff plan.
+  - **HIGH Fix:** Added `platformdirs` to `hiddenimports` in `CellWatch.spec` and declared `platformdirs>=4.0.0` in `requirements.txt` to eliminate reliance on lucky fallback behavior.
+  - Kept TensorFlow, TensorFlow-Hub, and tf2onnx in `excludes` (fully superseded by ONNX Runtime).
+- **Data Path Isolation & UI-Freeze Remediation (`monitor_app/utils.py` Lines 22–135):**
+  - **HIGH & MEDIUM Fix:** Separated `data_path(relative_path)` from disk migration. `data_path()` now performs instantaneous path resolution without disk I/O, preventing startup/import UI freezes.
+  - Routes production data to `%LocalAppData%\CellWatchAI\` when frozen (`sys.frozen=True`) with fallback to project root in development.
+  - Created dedicated `migrate_legacy_data()` function invoked once at startup in `monitor_app/main.py`. Resolves dead code by migrating both individual files (`app_state.db`, `incidents.db`) AND complete directory trees (`recordings/`, `exports/`, `updates/`) from legacy locations (executable root or legacy AppData) without overwriting existing operator records.
+- **Visual C++ Redistributable SHA-256 Hash Pinning (`scripts/build_installer.ps1` Lines 56–86):**
+  - **HIGH Fix:** Pinned the exact SHA-256 checksum for `vc_redist.x64.exe` (`cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b`). After downloading or reading cache, the script computes and validates the hash, aborting and purging corrupted or altered payloads.
+- **Inno Setup Script Architecture & Hardware Guardrails (`installer/CellWatch.iss` Lines 1–185):**
+  - **MEDIUM Fix (Disk Space):** Reduced `ExtraDiskSpaceRequired` from 8.5 GB to 2 GB (`2147483648`), bringing total installer demand to ~10.2 GB (matching the ~10 GB target in handoff plan) and preventing false installation blocks on laptops with 11–15 GB free space.
+  - **MEDIUM Fix (GPU & Driver Abort):** Updated `InitializeSetup()` with strict WMI hardware and driver validation:
+    - Queries `Win32_VideoController` for NVIDIA GPU presence. If absent, displays critical error dialog directing operator to `https://www.nvidia.com/Download/index.aspx` and aborts setup (`Result := False`).
+    - Validates NVIDIA driver version ≥ 545.00 (R545) required for TensorRT 11.1 / CUDA 11.8. Aborts setup with download URL if outdated driver detected.
+    - Supported `/SKIPGPU` command line parameter for developer debugging and headless clean-VM testing.
+- **Target-Side Diagnosis (T1) & Clean-VM Checklist (T7) Documentation:**
+  - Created `.claude/plans/target-diagnosis-and-clean-vm-checklist.md` documenting target Command Prompt diagnostic protocol (capturing first DLL/driver error codes) and a 10-point manual verification matrix for clean Windows 11 target machines.
+- **Unit Test Coverage (`tests/test_installer_prereqs.py` Lines 1–150):**
+  - Enhanced test suite: validates development and frozen `data_path`, migration of both files and directory trees, bundled model discovery, spec dependency retention (`polars` present, `platformdirs` bundled), Inno Setup hardware abort sections, and pinned redistributable hash.
+  - **Verification:** All **7 passed in 8.97s** (`pytest tests/test_installer_prereqs.py`).
+
+## [2026-10-08] Track B: Self-Updating Desktop Workflow (Foundation — Paused at Milestone 1)
+- **Status:** Milestone 1 completed; Milestones 2–3 paused per project direction to prioritize installer stabilization.
+- **`monitor_app/app_version.py`**, **`monitor_app/update_check.py`**, & **`monitor_app/update_package.py`** [NEW]:
+  - Implemented core update foundation ported from eKalinga+: version comparison (`AppVersion`), manifest schema validation, update check rate-limiting, authenticated downloader with SHA-256 verification, and elevated Inno Setup launcher.
+  - Unit tests: `tests/test_app_version.py`, `tests/test_update_check.py`, `tests/test_update_package.py` (all 34 tests green).
 
