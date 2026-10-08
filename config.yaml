@@ -116,3 +116,7 @@ yolo:
     track_low_thresh: 0.2
   tracker_isolation: per_camera
   untracked_grid_px: 96
+update:
+  check_on_startup: true
+  fetch_timeout_s: 15
+  manifest_url: ''
