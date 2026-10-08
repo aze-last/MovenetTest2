@@ -120,3 +120,4 @@ update:
   check_on_startup: true
   fetch_timeout_s: 15
   manifest_url: ''
+  max_installer_bytes: 134217728
