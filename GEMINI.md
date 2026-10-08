@@ -553,6 +553,35 @@ Engineering timing belongs in config.yaml.
 
 ---
 
+## Rule 8
+
+Dependency freeze.
+
+No AI agent shall add, remove, upgrade, or otherwise modify project dependencies.
+
+This includes requirements.txt, .venv310, and any new third-party package.
+
+Rationale: dependency changes break the frozen PyInstaller build, the Inno Setup
+installer, and the offline deployment — failures that surface on target machines,
+not on dev machines.
+
+Prefer the standard library.
+
+Solve distribution problems with hosting and architecture, never with new packages.
+Example: a multi-gigabyte installer is hosted on direct-URL cloud storage (S3)
+and referenced from version.json — the updater fetches plain HTTPS with stdlib,
+no new dependency involved.
+
+Exception: a human explicitly requests a specific dependency change.
+
+The agent must then state the blast radius first:
+
+build size, installer impact, offline deployment impact.
+
+Existing entries (e.g. platformdirs) are grandfathered and stay untouched.
+
+---
+
 # Dual Database Architecture
 
 Two databases exist for different purposes.

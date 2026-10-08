@@ -37,6 +37,7 @@ Thumbs.db
 
 # Logs & Temporary Files
 runs/
+.tmp.driveupload/
 monitor_app/runs/
 *.log
 *.tmp
@@ -49,6 +50,9 @@ packages_offline/
 # Zip Archives
 *.zip
 monitor_app.zip
+
+# Build artifacts (never commit binaries)
+artifacts/installer/*.exe
 build/
 
 dist/
