@@ -374,3 +374,20 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
   - 4 tests green; with audio_alerts suite 6 passed total.
 - **Verification:** `.venv310\Scripts\python.exe -m pytest tests/test_cloud_verifier.py tests/test_audio_alerts.py -v` = 6 passed.
 
+## [2026-10-15] Rule 9 rtk token-saving mandate (GEMINI.md)
+- **`GEMINI.md`** (Rule 9, after Rule 8 line ~582):
+  - Added strict `rtk.exe` proxy rule: `rtk ls/tree/read/find/git/diff/log/grep/rg/test/err/json` instead of raw outputs. Purpose: filter/summarize shell output before LLM context to save tokens per operator install at WinGet Links path. Exception only for byte-exact ops with stated reason.
+
+## [2026-10-15] Secrets hygiene + reports AI writer (branch feat/cloud-verifier-alert-manager-prep)
+- **`.gitignore`** (secrets block):
+  - Added `.env, .env.*, config.local.yaml, *_key.txt, XKIRO*`. Purpose: never commit keys. Did NOT ignore `config.yaml` itself (tracked, installer/PyInstaller need it) — blast radius if untracked: fresh clones + offline installer break.
+- **`GEMINI.md`** (Rule 10):
+  - Secrets-only ban: no secrets in config/code/logs/git; AI must never read/print key VALUES (bool() check allowed). `config.yaml` structure stays visible per Rules 4/7. Purpose: full-file AI ban would break config-driven work.
+- **`config.yaml`** (cloud_verifier routing):
+  - Added `api_key_env: XKIRO_API_KEY, api_key: '' (always empty), text_model, report_summary_enabled:false`. Purpose: pasting point is env name, key value stays in `$env:XKIRO_API_KEY`, never in file.
+- **`monitor_app/cloud_verifier.py`** (routing + text path):
+  - `api_key_env` routing, `build_text_payload` + `summarize_text_async` (stdlib, 2s timeout, rate-limited). Purpose: reports polish without new deps.
+- **`monitor_app/reports.py`** (AI writing):
+  - Added `generate_ai_summary()` offline draft in preview + `request_ai_polish()` async cloud polish via `after(0)` (never blocks UI). Purpose: panel-ready wording, local counts unchanged.
+- **Verification:** 6 passed (`test_cloud_verifier` + `test_audio_alerts`), `reports` import ok.
+

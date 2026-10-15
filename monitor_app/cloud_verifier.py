@@ -54,12 +54,20 @@ def get_cloud_verifier_config():
         "timeout_s": float(cfg.get("timeout_s", DEFAULT_TIMEOUT_S)),
         "min_interval_s": float(cfg.get("min_interval_s", DEFAULT_MIN_INTERVAL_S)),
         "max_image_bytes": int(cfg.get("max_image_bytes", MAX_JPEG_BYTES)),
+        "api_key_env": str(cfg.get("api_key_env", "XKIRO_API_KEY")),
+        "text_model": str(cfg.get("text_model", cfg.get("model", DEFAULT_MODEL))),
+        "report_summary_enabled": bool(cfg.get("report_summary_enabled", False)),
     }
 
 
 def get_api_key():
-    """Key from environment only. Empty string = disabled."""
-    return (os.environ.get("XKIRO_API_KEY") or "").strip()
+    """Key from environment only. Env name is routable via config api_key_env. Empty = disabled."""
+    try:
+        from monitor_app.config import get_config
+        env_name = str((get_config("cloud_verifier") or {}).get("api_key_env", "XKIRO_API_KEY"))
+    except Exception:
+        env_name = "XKIRO_API_KEY"
+    return (os.environ.get(env_name) or "").strip()
 
 
 def build_chat_payload(model, event_type, severity, data_url):
@@ -220,6 +228,65 @@ class CloudVerifier:
                     pass
 
         self._mark_called()  # reserve slot at dispatch to enforce min_interval
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
+    def build_text_payload(self, cfg, draft_text):
+        """OpenAI-compatible text polish payload (no image). Pure builder for reports."""
+        return {
+            "model": cfg.get("text_model") or cfg.get("model"),
+            "max_tokens": 300,
+            "temperature": 0.2,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "Rewrite this jail monitoring report draft in clear institutional English. "
+                        "Keep facts, counts, severity labels unchanged. No new claims.\n\n" + draft_text[:3000]
+                    ),
+                }
+            ],
+        }
+
+    def summarize_text_async(self, draft_text, callback=None):
+        """Async AI polish for reports.py. OFF unless enabled+report_summary_enabled+key. Never blocks."""
+        cfg = get_cloud_verifier_config()
+        if not cfg["enabled"] or not cfg.get("report_summary_enabled"):
+            return False
+        if not self._can_call(cfg):
+            return False
+        payload = self.build_text_payload(cfg, draft_text)
+
+        def _worker():
+            url = cfg["base_url"].rstrip("/") + "/chat/completions"
+            out = {"polished": "", "reason": "disabled"}
+            if _is_allowed_https_url(url) and get_api_key():
+                body = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    url,
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer " + get_api_key(),
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=cfg["timeout_s"]) as resp:
+                        data = json.loads(resp.read(64_000).decode("utf-8", errors="replace"))
+                    out = {"polished": str(data["choices"][0]["message"]["content"])[:3000], "reason": "ok"}
+                except urllib.error.HTTPError as e:
+                    out = {"polished": "", "reason": f"http {e.code}"}
+                except Exception as e:
+                    out = {"polished": "", "reason": f"net {type(e).__name__}"}
+            self._mark_called()
+            if callback:
+                try:
+                    callback(out)
+                except Exception:
+                    pass
+
+        self._mark_called()
         threading.Thread(target=_worker, daemon=True).start()
         return True
 

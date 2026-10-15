@@ -582,6 +582,47 @@ Existing entries (e.g. platformdirs) are grandfathered and stay untouched.
 
 ---
 
+## Rule 9
+
+Token-efficient tooling (rtk).
+
+`rtk.exe` (Rust Token Killer) is installed on the dev machine and MUST be used
+for all shell-output tool calls to save tokens.
+
+Strict rule: prefer the rtk proxy over the raw command:
+
+- `rtk ls`, `rtk tree`, `rtk read`, `rtk find` instead of raw dir/file listing
+- `rtk git`, `rtk diff`, `rtk log` instead of raw git output
+- `rtk grep`, `rtk rg` instead of raw grep
+- `rtk test`, `rtk err`, `rtk summary` instead of raw test/log dumps
+- `rtk json`, `rtk gain`, `rtk wc` for JSON/counts/savings checks
+
+Rationale: rtk filters and summarizes system outputs before they reach LLM
+context. Raw dumps waste tokens and bury signal.
+
+Exception: only bypass rtk when full byte-exact fidelity is required
+(binary/redirection-sensitive ops), and state the reason first.
+
+---
+
+## Rule 10
+
+Secrets hygiene (API keys).
+
+- NEVER store secrets in `config.yaml`, code, logs, or git. `config.yaml`
+  holds only non-secret routing (`base_url`, `model`, `timeout_s`,
+  `api_key_env`) plus an always-empty `api_key: ""` placeholder.
+- The real key lives in the environment (`XKIRO_API_KEY`) only.
+- AI agents MUST NOT read, print, log, or echo key VALUES. Checking
+  presence via `bool(get_api_key())` is allowed; dumping the value is not.
+- `config.yaml` structure/keys remain visible to AI (required by Rules 4
+  and 7). Only secret VALUES are prohibited, never the whole file.
+- Rationale: `config.yaml` is TRACKED (installer/PyInstaller/offline build
+  depend on it). Ignoring/untracking it breaks fresh clones and target
+  deployment. Secret overlays (`config.local.yaml`, `.env`) are gitignored.
+
+---
+
 # Dual Database Architecture
 
 Two databases exist for different purposes.

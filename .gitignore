@@ -51,6 +51,13 @@ packages_offline/
 *.zip
 monitor_app.zip
 
+# Secrets — never commit keys (config.yaml itself stays tracked; secrets live in env)
+.env
+.env.*
+config.local.yaml
+*_key.txt
+XKIRO*
+
 # Build artifacts (never commit binaries)
 artifacts/installer/*.exe
 build/

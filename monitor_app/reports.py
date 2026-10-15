@@ -549,7 +549,40 @@ class ReportsScreen(ttk.Frame):
             "- Validate incident counts against the incident review log.\n"
             "- Confirm severity filters before exporting final documentation.\n"
             "- Review unresolved items and update operator decisions before presenting.\n"
+            "\n"
+            f"{self.generate_ai_summary()}"
         )
+
+    def generate_ai_summary(self):
+        """Offline AI-writing draft (no network). Cloud polish is opt-in via request_ai_polish()."""
+        report_type = self.report_type_var.get()
+        severities = ", ".join(self._selected_severities())
+        return (
+            "AI EXECUTIVE SUMMARY (offline draft)\n"
+            f"- {report_type} covering {self._format_date_range()} with filter {severities}.\n"
+            "- Local detector remains source of truth; pending cloud verdicts do not alter counts.\n"
+            "- Enable cloud_verifier.report_summary_enabled + XKIRO_API_KEY for polished wording.\n"
+        )
+
+    def request_ai_polish(self):
+        """Async cloud polish of current preview. Never blocks UI; silent fallback to offline draft."""
+        try:
+            from monitor_app.cloud_verifier import get_cloud_verifier
+            draft = self.preview_text.get("1.0", "end-1c") if hasattr(self, "preview_text") else ""
+            if not draft:
+                return False
+
+            def _done(out):
+                polished = (out or {}).get("polished", "")
+                if polished and hasattr(self, "winfo_exists") and self.winfo_exists():
+                    try:
+                        self.after(0, lambda: self._set_preview_text(draft + "\nAI POLISH\n" + polished))
+                    except Exception:
+                        pass
+
+            return get_cloud_verifier().summarize_text_async(draft, callback=_done)
+        except Exception:
+            return False
 
     def reset_filters(self):
         self.report_type_var.set(self.REPORT_TYPES[0])

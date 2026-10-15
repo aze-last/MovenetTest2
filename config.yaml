@@ -29,6 +29,10 @@ cloud_verifier:
   timeout_s: 2.0
   min_interval_s: 10.0
   max_image_bytes: 400000
+  api_key_env: XKIRO_API_KEY
+  api_key: ''
+  text_model: vendor/model
+  report_summary_enabled: false
 concealment:
   behavior:
     cooldown_frames: 60
