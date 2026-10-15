@@ -362,3 +362,22 @@ thread), so `central_inference._movenet_worker` passes `draw=False`; the visible
 drawn later by `_render_person_boxes` on the real output frame. The synchronous
 `process_frame` path keeps `draw=True`, i.e. its original behavior. To restore the old async
 behavior, pass `draw=True` at the `run_movenet_only` call site.
+
+## 2026-10-15 -- Cloud verifier prep in AlertManager (branch feat/cloud-verifier-alert-manager-prep)
+
+Yes, AlertManager is the right seam. Local detection stays truth; cloud is async annotator only.
+
+Changes (no removals, OFF by default, stdlib-only per Rule 8):
+- `config.yaml` cloud_verifier block (enabled:false, base_url https://api.xkiro.com/v1, model vendor/model, timeout_s 2.0, min_interval_s 10.0, max_image_bytes 400000). Purpose: engineering params, offline default (Rule 4).
+- `monitor_app/cloud_verifier.py` [NEW]: OpenAI-compatible POST /chat/completions via urllib, key from env XKIRO_API_KEY only, https-only guard, JPEG base64 snapshot cap, strict-JSON parse verdict/reason/caption, daemon-thread verify_async to EventBus CLOUD_VERDICT. Purpose: 1 call per incident enrichment, silent fallback to local.
+- `monitor_app/alert_manager.py` _confirm hook: after INCIDENT_START + Beep, calls verify_async(). Purpose: preserves offline path; disabled/no-key/429/timeout is no-op.
+- `tests/test_cloud_verifier.py` [NEW]: payload shape, parse, disabled-noop, https guard. 6 passed with audio_alerts.
+
+Options ranked:
+1. A (PREPPED): incident verifier in AlertManager -- best token ROI, defense slide, zero FPS risk.
+2. B (next): report summarizer in reports.py using CLOUD_VERDICT caption -- no realtime risk.
+3. C (rejected): per-frame detector replacement -- 80-120 req/sec, instant 429, cost, offline break. Do not do.
+4. D (future): operator Q&A over incidents.db, not live video.
+5. E (future): speech modality for voice alarm instead of Beep.
+
+Enable: set cloud_verifier.enabled true + model from Models page + env XKIRO_API_KEY; offline demo still passes with false.

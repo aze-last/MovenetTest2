@@ -363,3 +363,14 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
   - Implemented core update foundation ported from eKalinga+: version comparison (`AppVersion`), manifest schema validation, update check rate-limiting, authenticated downloader with SHA-256 verification, and elevated Inno Setup launcher.
   - Unit tests: `tests/test_app_version.py`, `tests/test_update_check.py`, `tests/test_update_package.py` (all 34 tests green).
 
+## [2026-10-15] Cloud verifier prep in AlertManager (branch feat/cloud-verifier-alert-manager-prep)
+- **`config.yaml`** (cloud_verifier block):
+  - Added `enabled:false, base_url:https://api.xkiro.com/v1, model:vendor/model, timeout_s:2.0, min_interval_s:10.0, max_image_bytes:400000`. Purpose: OFF by default so offline BJMP deployment unaffected.
+- **`monitor_app/cloud_verifier.py`** [NEW] (Lines 1-180):
+  - Stdlib-only OpenAI-compatible client, key from env XKIRO_API_KEY only, https-only guard, JPEG snapshot cap, strict-JSON verdict parse, daemon-thread verify_async to EventBus CLOUD_VERDICT. Purpose: 1 call per incident, 2s timeout fallback to local.
+- **`monitor_app/alert_manager.py`** (_confirm hook):
+  - After INCIDENT_START + Beep, calls verify_async(). Purpose: local truth first, cloud only enriches, never blocks.
+- **`tests/test_cloud_verifier.py`** [NEW]:
+  - 4 tests green; with audio_alerts suite 6 passed total.
+- **Verification:** `.venv310\Scripts\python.exe -m pytest tests/test_cloud_verifier.py tests/test_audio_alerts.py -v` = 6 passed.
+

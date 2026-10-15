@@ -194,6 +194,21 @@ class IncidentState:
         # Trigger Institutional Audio Alert
         get_sound_alert_manager().play_alert(self.highest_severity)
 
+        # Optional cloud second-opinion (prep, OFF by default).
+        # Local truth already published above; this only enriches via CLOUD_VERDICT.
+        # Never blocks: daemon thread, 2s timeout, rate-limited, silent fallback.
+        try:
+            from monitor_app.cloud_verifier import get_cloud_verifier
+            get_cloud_verifier().verify_async(
+                camera_id=self.camera_id,
+                incident_id=self.incident_id,
+                event_type=joined_evidence,
+                severity=self.highest_severity,
+                frame=frame,
+            )
+        except Exception:
+            pass
+
     def tick(self):
         """Called periodically or per-frame to process timeouts"""
         now = time.time()
