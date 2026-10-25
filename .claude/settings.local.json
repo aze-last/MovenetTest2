@@ -1,0 +1,50 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find . -maxdepth 3 -not -path '*/\\\\.git*' -not -path '*/node_modules*')",
+      "Bash(.venv310/Scripts/python.exe --version)",
+      "Bash(.venv/Scripts/python.exe --version)",
+      "Read(//c/Users/ASUS/.agent/skills/skills/**)",
+      "Read(//c/Users/ASUS/.agent/**)",
+      "Bash(mkdir -p .claude/skills/systematic-debugging)",
+      "Bash(cp \"/c/Users/ASUS/.agent/skills/skills/systematic-debugging/SKILL.md\" .claude/skills/systematic-debugging/)",
+      "Bash(cp \"/c/Users/ASUS/.agent/skills/skills/systematic-debugging/root-cause-tracing.md\" .claude/skills/systematic-debugging/)",
+      "Bash(cp \"/c/Users/ASUS/.agent/skills/skills/systematic-debugging/defense-in-depth.md\" .claude/skills/systematic-debugging/)",
+      "Bash(cp \"/c/Users/ASUS/.agent/skills/skills/systematic-debugging/condition-based-waiting.md\" .claude/skills/systematic-debugging/)",
+      "Bash(.venv310/Scripts/python.exe -m py_compile monitor_app/camera_view.py)",
+      "Read(//c//**)",
+      "Bash(.venv310/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(python3 -c \"import ultralytics; print\\('ultralytics OK'\\)\")",
+      "Bash(nvidia-smi --query-gpu=memory.total,memory.used --format=csv)",
+      "Bash(py -3.10 --version)",
+      "Bash(.venv310/Scripts/python.exe -c \"import urllib.request; urllib.request.urlopen\\('https://pypi.org', timeout=5\\); print\\('PyPI reachable'\\)\")",
+      "Bash(py -3.10 -m venv .venv_tfcmp)",
+      "Bash(cd 'C:\\\\Users\\\\ASUS\\\\PycharmProjects\\\\MovenetTutorial')",
+      "Bash(pwd)",
+      "Bash(echo \"=== config.yaml ===\")",
+      "Bash(cat config.yaml)",
+      "Bash(.venv_tfcmp/Scripts/python.exe -m pip install \"tensorflow==2.10\" tensorflow-hub opencv-python numpy onnxruntime)",
+      "Bash(.venv_tfcmp/Scripts/python.exe tfcmp_a5.py)",
+      "Bash(python -c \"import os,tempfile; d=os.path.join\\(tempfile.gettempdir\\(\\),'vidframes'\\); os.makedirs\\(d,exist_ok=True\\); print\\(d\\)\")",
+      "Bash(.venv310/Scripts/python.exe -c \"import monitor_app.ai_engine, monitor_app.central_inference; print\\('IMPORTS OK'\\)\")",
+      "Bash(.venv310/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(.venv310/Scripts/python.exe -m pytest tests/test_flicker_remediation.py -q)",
+      "Bash(powershell.exe -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\\\"Name='find.exe' OR Name='findstr.exe'\\\\\" | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List\")",
+      "Bash(.venv310\\\\Scripts\\\\python.exe --version)",
+      "Bash(\"./.venv310/Scripts/python.exe\" --version)",
+      "Bash(\"./.venv310/Scripts/python.exe\" tests/diag_rc1_concurrency.py)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(\"./.venv310/Scripts/python.exe\" -m pytest tests/test_concealment_tracking.py tests/test_concealment_fusion.py -q)",
+      "Bash(\"./.venv310/Scripts/python.exe\" -m pytest tests/test_stable_id_thread_safety.py -q)",
+      "Bash(\"./.venv310/Scripts/python.exe\" -m pytest tests/test_render_dedup.py -q)",
+      "Bash(\"./.venv310/Scripts/python.exe\" -m pytest tests/ -q --ignore=tests/diag_rc1_concurrency.py)",
+      "Bash(./.venv310/Scripts/python.exe -c ' *)",
+      "Bash(xargs basename -a)",
+      "Bash(xargs grep -l \"digital\\\\|contract\\\\|e-kard\")"
+    ]
+  },
+  "enabledPlugins": {
+    "claude-code-setup@claude-plugins-official": true
+  }
+}
