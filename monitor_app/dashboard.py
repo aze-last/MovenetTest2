@@ -313,9 +313,10 @@ class DashboardScreen(ctk.CTkFrame):
 
     def _read_snapshot(self):
         snap = {"total": 0, "pending": 0, "latest": "None"}
-        if not os.path.exists("incidents.db"): return snap
+        db_path = utils.data_path("incidents.db")
+        if not os.path.exists(db_path): return snap
         try:
-            with sqlite3.connect("incidents.db") as conn:
+            with sqlite3.connect(db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT COUNT(*) FROM incidents")
                 snap["total"] = cur.fetchone()[0]

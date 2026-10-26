@@ -1,0 +1,13 @@
+﻿{
+    "version":  "1.0.0",
+    "notes":  [
+                  "Initial release with MoveNet pose estimation and YOLO26s contraband detection.",
+                  "Integrated multi-camera Concealment Fusion Engine.",
+                  "Institutional Dark theme and operator telemetry monitoring."
+              ],
+    "publishedAt":  "2026-10-26",
+    "releasePageUrl":  "https://github.com/CellWatchAI/CellWatch/releases/tag/v1.0.0",
+    "installerFileName":  "CellWatch-Setup-1.0.0.exe",
+    "installerUrl":  "https://github.com/CellWatchAI/CellWatch/releases/download/v1.0.0/CellWatch-Setup-1.0.0.exe",
+    "sha256":  "358a370845656c6298615a3f884124077eb30faace10c35b19d0f6998818b18c"
+}

@@ -22,7 +22,7 @@ class TestInstallerPrereqs:
             sys.frozen = False
             result = utils.data_path("app_state.db")
             expected = os.path.join(PROJECT_ROOT, "app_state.db")
-            assert os.path.normpath(result) == os.path.normpath(expected)
+            assert os.path.normcase(os.path.normpath(result)) == os.path.normcase(os.path.normpath(expected))
         finally:
             if orig_frozen:
                 sys.frozen = orig_frozen
