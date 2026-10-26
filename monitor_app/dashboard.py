@@ -12,18 +12,18 @@ import monitor_app.utils as utils
 
 class DashboardScreen(ctk.CTkFrame):
     PALETTE = {
-        "page": "#06090c",           # Deep base
-        "panel": "#0f161f",          # Main panel background
-        "card": "#151f2b",           # Widget card background
-        "border": "#1e2c3a",         # Subtle borders
-        "accent": "#4f84bb",         # Primary brand color
-        "accent_glow": "#3e709e",    # Subdued accent
-        "text_main": "#ffffff",
-        "text_dim": "#a2b5c7",
-        "text_muted": "#637a91",
-        "success": "#50d186",
-        "warning": "#f2c94c",
-        "danger": "#f25c5c",
+        "page": ("#edf2f7", "#06090c"),           # Light slate base vs deep base
+        "panel": ("#f8fafc", "#0f161f"),          # Clean panel background
+        "card": ("#ffffff", "#151f2b"),           # Widget card background
+        "border": ("#cbd5e1", "#1e2c3a"),         # Subtle borders
+        "accent": ("#1d4ed8", "#4f84bb"),         # Primary brand color
+        "accent_glow": ("#2563eb", "#3e709e"),    # Subdued accent
+        "text_main": ("#0f172a", "#ffffff"),
+        "text_dim": ("#334155", "#a2b5c7"),
+        "text_muted": ("#64748b", "#7e94a8"),
+        "success": ("#16a34a", "#50d186"),
+        "warning": ("#d97706", "#f2c94c"),
+        "danger": ("#dc2626", "#f25c5c"),
     }
 
     def __init__(self, parent):
@@ -119,17 +119,13 @@ class DashboardScreen(ctk.CTkFrame):
             card = ctk.CTkFrame(
                 self.main_view,
                 fg_color=self.PALETTE["card"],
-                corner_radius=16,
+                corner_radius=14,
                 border_width=1,
                 border_color=self.PALETTE["border"],
                 height=140
             )
             card.grid(row=1, column=i, sticky="nsew", padx=8, pady=(0, 24))
             card.grid_propagate(False)
-
-            # Glow line at bottom
-            glow = ctk.CTkFrame(card, fg_color=accent, height=3, corner_radius=10)
-            glow.pack(side="bottom", fill="x", padx=15, pady=(0, 12))
 
             inner = ctk.CTkFrame(card, fg_color="transparent")
             inner.pack(fill="both", expand=True, padx=20, pady=20)
@@ -164,7 +160,7 @@ class DashboardScreen(ctk.CTkFrame):
         health_box = ctk.CTkFrame(
             container,
             fg_color=self.PALETTE["panel"],
-            corner_radius=20,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["border"]
         )
@@ -201,7 +197,7 @@ class DashboardScreen(ctk.CTkFrame):
         ledger_box = ctk.CTkFrame(
             container,
             fg_color=self.PALETTE["panel"],
-            corner_radius=20,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["border"]
         )
@@ -342,6 +338,7 @@ class DashboardScreen(ctk.CTkFrame):
         return os.path.splitdrive(os.path.abspath(os.getcwd()))[0] + "\\"
 
     def _measure_latency_ms(self):
+        s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(0.4)
@@ -350,4 +347,7 @@ class DashboardScreen(ctk.CTkFrame):
             s.recvfrom(512)
             return (time.time() - start) * 1000
         except: return None
-        finally: s.close()
+        finally:
+            if s:
+                try: s.close()
+                except: pass

@@ -11,21 +11,21 @@ from PIL import Image
 
 
 PALETTE = {
-    "page": "#10161d",
-    "panel": "#171f29",
-    "panel_alt": "#1c2531",
-    "card": "#1b2430",
-    "card_soft": "#202b38",
-    "surface": "#0d131a",
-    "border": "#26384a",
-    "text": "#f3f7fb",
-    "muted": "#8da1b4",
-    "subtle": "#617487",
-    "accent": "#4f84bb",
-    "accent_hover": "#426f9b",
-    "success": "#42c08d",
-    "warning": "#d7a75a",
-    "danger": "#d86161",
+    "page": ("#edf2f7", "#10161d"),
+    "panel": ("#f8fafc", "#171f29"),
+    "panel_alt": ("#e2e8f0", "#1c2531"),
+    "card": ("#ffffff", "#1b2430"),
+    "card_soft": ("#f1f5f9", "#202b38"),
+    "surface": ("#ffffff", "#0d131a"),
+    "border": ("#cbd5e1", "#26384a"),
+    "text": ("#0f172a", "#f3f7fb"),
+    "muted": ("#64748b", "#8da1b4"),
+    "subtle": ("#94a3b8", "#617487"),
+    "accent": ("#1d4ed8", "#4f84bb"),
+    "accent_hover": ("#1e40af", "#426f9b"),
+    "success": ("#16a34a", "#42c08d"),
+    "warning": ("#d97706", "#d7a75a"),
+    "danger": ("#dc2626", "#d86161"),
 }
 
 
@@ -85,9 +85,9 @@ def _status_style(status):
     return "PENDING", PALETTE["accent"]
 
 
-class IncidentsScreen(ttk.Frame):
+class IncidentsScreen(ctk.CTkFrame):
     def __init__(self, parent, current_user="Unknown"):
-        super().__init__(parent)
+        super().__init__(parent, fg_color=PALETTE["page"], corner_radius=0)
         self.pack(fill="both", expand=True)
         from monitor_app.utils import data_path
         self.db_path = data_path("incidents.db")
@@ -111,7 +111,7 @@ class IncidentsScreen(ttk.Frame):
         header = ctk.CTkFrame(
             self,
             fg_color=PALETTE["panel"],
-            corner_radius=24,
+            corner_radius=14,
             border_width=1,
             border_color=PALETTE["border"],
         )
@@ -157,7 +157,7 @@ class IncidentsScreen(ttk.Frame):
             card = ctk.CTkFrame(
                 summary,
                 fg_color=PALETTE["card"],
-                corner_radius=18,
+                corner_radius=14,
                 border_width=1,
                 border_color=PALETTE["border"],
                 width=120,
@@ -206,7 +206,7 @@ class IncidentsScreen(ttk.Frame):
         self.tabview = ctk.CTkTabview(
             self,
             fg_color=PALETTE["panel"],
-            corner_radius=24,
+            corner_radius=14,
             border_width=1,
             border_color=PALETTE["border"],
             segmented_button_fg_color=PALETTE["card_soft"],
@@ -235,6 +235,10 @@ class IncidentsScreen(ttk.Frame):
 
     def stop_monitoring(self):
         self.review_tab.stop_monitoring()
+
+    def apply_appearance_mode(self):
+        if hasattr(self, "log_tab") and self.log_tab:
+            self.log_tab.apply_appearance_mode()
 
     def refresh_overview(self):
         snapshot = {
@@ -325,7 +329,7 @@ class IncidentReviewDetail(ctk.CTkFrame):
         self.left_panel = ctk.CTkFrame(
             self,
             fg_color=PALETTE["panel"],
-            corner_radius=24,
+            corner_radius=14,
             border_width=1,
             border_color=PALETTE["border"],
         )
@@ -445,7 +449,7 @@ class IncidentReviewDetail(ctk.CTkFrame):
         self.details_card = ctk.CTkScrollableFrame(
             self.right_panel,
             fg_color=PALETTE["panel"],
-            corner_radius=24,
+            corner_radius=14,
             border_width=1,
             border_color=PALETTE["border"],
         )
@@ -883,12 +887,22 @@ class IncidentLogTable(ctk.CTkFrame):
         self.refresh_data()
 
     def _configure_tree_style(self):
+        mode = ctk.get_appearance_mode()
+        is_light = mode == "Light"
+
+        bg_card = "#ffffff" if is_light else "#1b2430"
+        fg_text = "#0f172a" if is_light else "#f3f7fb"
+        bg_heading = "#e2e8f0" if is_light else "#1c2531"
+        fg_heading = "#1e293b" if is_light else "#f3f7fb"
+        sel_bg = "#2563eb" if is_light else "#4f84bb"
+        sel_fg = "#ffffff"
+
         style = ttk.Style()
         style.configure(
             "Incidents.Treeview",
-            background=PALETTE["card"],
-            foreground=PALETTE["text"],
-            fieldbackground=PALETTE["card"],
+            background=bg_card,
+            foreground=fg_text,
+            fieldbackground=bg_card,
             rowheight=34,
             borderwidth=0,
             relief="flat",
@@ -896,28 +910,48 @@ class IncidentLogTable(ctk.CTkFrame):
         )
         style.map(
             "Incidents.Treeview",
-            background=[("selected", PALETTE["accent"])],
-            foreground=[("selected", PALETTE["text"])],
+            background=[("selected", sel_bg)],
+            foreground=[("selected", sel_fg)],
         )
         style.configure(
             "Incidents.Treeview.Heading",
-            background=PALETTE["panel_alt"],
-            foreground=PALETTE["text"],
+            background=bg_heading,
+            foreground=fg_heading,
             relief="flat",
             borderwidth=0,
             font=("Segoe UI Semibold", 10),
         )
         style.map(
             "Incidents.Treeview.Heading",
-            background=[("active", PALETTE["panel_alt"])],
-            foreground=[("active", PALETTE["text"])],
+            background=[("active", bg_heading)],
+            foreground=[("active", fg_heading)],
         )
+
+        if hasattr(self, "tree") and self.tree:
+            self._configure_tree_tags(is_light)
+
+    def _configure_tree_tags(self, is_light=None):
+        if is_light is None:
+            is_light = ctk.get_appearance_mode() == "Light"
+        danger = "#dc2626" if is_light else "#d86161"
+        success = "#16a34a" if is_light else "#42c08d"
+        warning = "#d97706" if is_light else "#d7a75a"
+        accent = "#1d4ed8" if is_light else "#4f84bb"
+
+        if hasattr(self, "tree") and self.tree:
+            self.tree.tag_configure("CONFIRMED", foreground=danger)
+            self.tree.tag_configure("FALSE ALARM", foreground=success)
+            self.tree.tag_configure("NEEDS REVIEW", foreground=warning)
+            self.tree.tag_configure("PENDING", foreground=accent)
+
+    def apply_appearance_mode(self):
+        self._configure_tree_style()
 
     def create_widgets(self):
         header = ctk.CTkFrame(
             self,
             fg_color=PALETTE["panel"],
-            corner_radius=24,
+            corner_radius=14,
             border_width=1,
             border_color=PALETTE["border"],
         )
@@ -982,13 +1016,13 @@ class IncidentLogTable(ctk.CTkFrame):
         table_card = ctk.CTkFrame(
             self,
             fg_color=PALETTE["panel"],
-            corner_radius=24,
+            corner_radius=14,
             border_width=1,
             border_color=PALETTE["border"],
         )
         table_card.pack(fill="both", expand=True)
 
-        table_wrap = tk.Frame(table_card, bg=PALETTE["panel"])
+        table_wrap = ctk.CTkFrame(table_card, fg_color="transparent")
         table_wrap.pack(fill="both", expand=True, padx=18, pady=18)
 
         columns = ("id", "time", "cam", "type", "status")
@@ -1025,10 +1059,7 @@ class IncidentLogTable(ctk.CTkFrame):
         y_scroll.pack(side="right", fill="y")
         self.tree.bind("<<TreeviewSelect>>", self.on_row_click)
 
-        self.tree.tag_configure("CONFIRMED", foreground=PALETTE["danger"])
-        self.tree.tag_configure("FALSE ALARM", foreground=PALETTE["success"])
-        self.tree.tag_configure("NEEDS REVIEW", foreground=PALETTE["warning"])
-        self.tree.tag_configure("PENDING", foreground=PALETTE["accent"])
+        self._configure_tree_tags()
 
     def open_records_folder(self):
         records_dir = "recordings"

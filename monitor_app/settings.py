@@ -9,21 +9,21 @@ from monitor_app import profile_store
 
 
 PALETTE = {
-    "page": "#10161d",
-    "panel": "#171f29",
-    "panel_alt": "#1c2531",
-    "card": "#1b2430",
-    "card_soft": "#202b38",
-    "border": "#26384a",
-    "text": "#f3f7fb",
-    "muted": "#8da1b4",
-    "subtle": "#617487",
-    "accent": "#4f84bb",
-    "accent_hover": "#426f9b",
-    "success": "#42c08d",
-    "success_hover": "#32956b",
-    "warning": "#d7a75a",
-    "danger": "#d86161",
+    "page": ("#edf2f7", "#10161d"),
+    "panel": ("#f8fafc", "#171f29"),
+    "panel_alt": ("#e2e8f0", "#1c2531"),
+    "card": ("#ffffff", "#1b2430"),
+    "card_soft": ("#f1f5f9", "#202b38"),
+    "border": ("#cbd5e1", "#26384a"),
+    "text": ("#0f172a", "#f3f7fb"),
+    "muted": ("#64748b", "#8da1b4"),
+    "subtle": ("#94a3b8", "#617487"),
+    "accent": ("#1d4ed8", "#4f84bb"),
+    "accent_hover": ("#1e40af", "#426f9b"),
+    "success": ("#16a34a", "#42c08d"),
+    "success_hover": ("#15803d", "#32956b"),
+    "warning": ("#d97706", "#d7a75a"),
+    "danger": ("#dc2626", "#d86161"),
 }
 
 
@@ -48,10 +48,15 @@ class CTkTooltip:
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
         
+        is_light = ctk.get_appearance_mode() == "Light"
+        bg_col = "#ffffff" if is_light else "#202b38"
+        border_col = "#cbd5e1" if is_light else "#26384a"
+        fg_col = "#0f172a" if is_light else "#f3f7fb"
+
         frame = tk.Frame(
             tw,
-            background="#202b38",
-            highlightbackground="#26384a",
+            background=bg_col,
+            highlightbackground=border_col,
             highlightthickness=1
         )
         frame.pack()
@@ -60,14 +65,15 @@ class CTkTooltip:
             frame,
             text=self.text,
             justify="left",
-            background="#202b38",
-            foreground="#f3f7fb",
+            background=bg_col,
+            foreground=fg_col,
             font=("Segoe UI", 10),
             wraplength=280,
             padx=12,
             pady=8
         )
         label.pack()
+
 
     def hide_tip(self, event=None):
         tw = self.tip_window
@@ -176,7 +182,7 @@ class SettingsScreen(ctk.CTkFrame):
         header = ctk.CTkFrame(
             self.main_view,
             fg_color=PALETTE["panel"],
-            corner_radius=26,
+            corner_radius=14,
             border_width=1,
             border_color=PALETTE["border"],
         )
@@ -217,7 +223,7 @@ class SettingsScreen(ctk.CTkFrame):
             card = ctk.CTkFrame(
                 summary,
                 fg_color=PALETTE["card"],
-                corner_radius=18,
+                corner_radius=14,
                 border_width=1,
                 border_color=PALETTE["border"],
                 width=150,
@@ -247,7 +253,7 @@ class SettingsScreen(ctk.CTkFrame):
         self._build_account_directory_card(content)
 
     def _build_system_profile_card(self, parent):
-        card = ctk.CTkFrame(parent, fg_color=PALETTE["panel"], corner_radius=24, border_width=1, border_color=PALETTE["border"])
+        card = ctk.CTkFrame(parent, fg_color=PALETTE["panel"], corner_radius=14, border_width=1, border_color=PALETTE["border"])
         card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 14))
         card.grid_columnconfigure(0, weight=1)
 
@@ -296,7 +302,7 @@ class SettingsScreen(ctk.CTkFrame):
         self.admin_only_widgets.append(self.save_branding_button)
 
     def _build_account_editor_card(self, parent):
-        card = ctk.CTkFrame(parent, fg_color=PALETTE["panel"], corner_radius=24, border_width=1, border_color=PALETTE["border"])
+        card = ctk.CTkFrame(parent, fg_color=PALETTE["panel"], corner_radius=14, border_width=1, border_color=PALETTE["border"])
         card.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=(0, 14))
         card.grid_columnconfigure((0, 1), weight=1)
 
@@ -347,12 +353,12 @@ class SettingsScreen(ctk.CTkFrame):
         self.account_save_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.account_reset_button = ctk.CTkButton(actions, text="Clear Form", height=42, corner_radius=12, fg_color=PALETTE["card_soft"], hover_color=PALETTE["panel_alt"], text_color=PALETTE["text"], font=("Segoe UI Semibold", 12), command=self.reset_account_form)
         self.account_reset_button.grid(row=0, column=1, sticky="ew", padx=4)
-        self.account_disable_button = ctk.CTkButton(actions, text="Disable Account", height=42, corner_radius=12, fg_color="#2a1b1f", hover_color="#7a434e", text_color=PALETTE["text"], font=("Segoe UI Semibold", 12), command=self.disable_selected_account)
+        self.account_disable_button = ctk.CTkButton(actions, text="Disable Account", height=42, corner_radius=12, fg_color=("#fee2e2", "#2a1b1f"), hover_color=("#fecaca", "#7a434e"), text_color=("#dc2626", "#f3f7fb"), font=("Segoe UI Semibold", 12), command=self.disable_selected_account)
         self.account_disable_button.grid(row=0, column=2, sticky="ew", padx=(8, 0))
         self.admin_only_widgets.extend([self.account_save_button, self.account_reset_button, self.account_disable_button])
 
     def _build_account_directory_card(self, parent):
-        card = ctk.CTkFrame(parent, fg_color=PALETTE["panel"], corner_radius=24, border_width=1, border_color=PALETTE["border"])
+        card = ctk.CTkFrame(parent, fg_color=PALETTE["panel"], corner_radius=14, border_width=1, border_color=PALETTE["border"])
         card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 16))
 
         header = ctk.CTkFrame(card, fg_color="transparent")
@@ -368,7 +374,7 @@ class SettingsScreen(ctk.CTkFrame):
         self.new_account_button.grid(row=0, column=1, sticky="e")
         self.admin_only_widgets.append(self.new_account_button)
 
-        table_wrap = tk.Frame(card, bg=PALETTE["panel"])
+        table_wrap = ctk.CTkFrame(card, fg_color="transparent")
         table_wrap.pack(fill="both", expand=True, padx=18, pady=(0, 18))
 
         columns = ("digital_id", "full_name", "username", "role", "status")
@@ -388,8 +394,8 @@ class SettingsScreen(ctk.CTkFrame):
         self.account_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         self.account_tree.bind("<<TreeviewSelect>>", self.on_account_selected)
-        self.account_tree.tag_configure("ACTIVE", foreground=PALETTE["success"])
-        self.account_tree.tag_configure("DISABLED", foreground=PALETTE["danger"])
+        self._configure_tree_tags()
+
 
     def _build_monitoring_section(self, row_index):
         # ── Profile Definitions ──
@@ -422,7 +428,7 @@ class SettingsScreen(ctk.CTkFrame):
         saved_profile = ai_cfg["active_profile"]
         saved_custom = ai_cfg["custom_settings"]
 
-        group = ctk.CTkFrame(self.main_view, fg_color=PALETTE["panel"], corner_radius=24, border_width=1, border_color=PALETTE["border"])
+        group = ctk.CTkFrame(self.main_view, fg_color=PALETTE["panel"], corner_radius=14, border_width=1, border_color=PALETTE["border"])
         group.grid(row=row_index, column=0, sticky="ew", padx=28, pady=(0, 28))
         group.grid_columnconfigure(0, weight=1)
 
@@ -444,13 +450,13 @@ class SettingsScreen(ctk.CTkFrame):
 
         self.PRESETS = {
             "high": {
-                "conf_thr": 0.25, "active_thr": 140.0, "agg_thr": 450.0, "alert_frames": 2, "motion_threshold": 4500, "motion_ratio": 0.009, "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50
+                "conf_thr": 0.06, "active_thr": 40.0, "agg_thr": 80.0, "alert_frames": 2, "motion_threshold": 1200, "motion_ratio": 0.005, "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50
             },
             "medium": {
-                "conf_thr": 0.22, "active_thr": 90.0, "agg_thr": 180.0, "alert_frames": 3, "motion_threshold": 5000, "motion_ratio": 0.010, "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50
+                "conf_thr": 0.08, "active_thr": 50.0, "agg_thr": 100.0, "alert_frames": 3, "motion_threshold": 1800, "motion_ratio": 0.008, "yolo_knife_conf": 0.30, "yolo_cell_conf": 0.30, "yolo_fallback_conf": 0.50
             },
             "low": {
-                "conf_thr": 0.18, "active_thr": 250.0, "agg_thr": 700.0, "alert_frames": 5, "motion_threshold": 6000, "motion_ratio": 0.012, "yolo_knife_conf": 0.40, "yolo_cell_conf": 0.40, "yolo_fallback_conf": 0.60
+                "conf_thr": 0.12, "active_thr": 80.0, "agg_thr": 150.0, "alert_frames": 5, "motion_threshold": 3000, "motion_ratio": 0.012, "yolo_knife_conf": 0.40, "yolo_cell_conf": 0.40, "yolo_fallback_conf": 0.60
             }
         }
 
@@ -666,11 +672,62 @@ class SettingsScreen(ctk.CTkFrame):
         dialog.protocol("WM_DELETE_WINDOW", lambda: (dialog.grab_release(), dialog.on_refresh(), dialog.destroy()))
 
     def _configure_tree_style(self):
+        mode = ctk.get_appearance_mode()
+        is_light = mode == "Light"
+
+        bg_card = "#ffffff" if is_light else "#1b2430"
+        fg_text = "#0f172a" if is_light else "#f3f7fb"
+        bg_heading = "#e2e8f0" if is_light else "#1c2531"
+        fg_heading = "#1e293b" if is_light else "#f3f7fb"
+        sel_bg = "#2563eb" if is_light else "#4f84bb"
+        sel_fg = "#ffffff"
+
         style = ttk.Style()
-        style.configure("Accounts.Treeview", background=PALETTE["card"], foreground=PALETTE["text"], fieldbackground=PALETTE["card"], rowheight=32, borderwidth=0, relief="flat", font=("Segoe UI", 10))
-        style.map("Accounts.Treeview", background=[("selected", PALETTE["accent"])], foreground=[("selected", PALETTE["text"])])
-        style.configure("Accounts.Treeview.Heading", background=PALETTE["panel_alt"], foreground=PALETTE["text"], relief="flat", borderwidth=0, font=("Segoe UI Semibold", 10))
-        style.map("Accounts.Treeview.Heading", background=[("active", PALETTE["panel_alt"])], foreground=[("active", PALETTE["text"])])
+        style.configure(
+            "Accounts.Treeview",
+            background=bg_card,
+            foreground=fg_text,
+            fieldbackground=bg_card,
+            rowheight=32,
+            borderwidth=0,
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
+        style.map(
+            "Accounts.Treeview",
+            background=[("selected", sel_bg)],
+            foreground=[("selected", sel_fg)],
+        )
+        style.configure(
+            "Accounts.Treeview.Heading",
+            background=bg_heading,
+            foreground=fg_heading,
+            relief="flat",
+            borderwidth=0,
+            font=("Segoe UI Semibold", 10),
+        )
+        style.map(
+            "Accounts.Treeview.Heading",
+            background=[("active", bg_heading)],
+            foreground=[("active", fg_heading)],
+        )
+
+        if hasattr(self, "account_tree") and self.account_tree:
+            self._configure_tree_tags(is_light)
+
+    def _configure_tree_tags(self, is_light=None):
+        if is_light is None:
+            is_light = ctk.get_appearance_mode() == "Light"
+        success = "#16a34a" if is_light else "#42c08d"
+        danger = "#dc2626" if is_light else "#d86161"
+
+        if hasattr(self, "account_tree") and self.account_tree:
+            self.account_tree.tag_configure("ACTIVE", foreground=success)
+            self.account_tree.tag_configure("DISABLED", foreground=danger)
+
+    def apply_appearance_mode(self):
+        self._configure_tree_style()
+
 
     def _entry_field(self, parent, label, variable, row):
         ctk.CTkLabel(parent, text=label, font=("Segoe UI Semibold", 12), text_color=PALETTE["muted"], anchor="w").grid(row=row, column=0, sticky="w", padx=22, pady=(0, 8))

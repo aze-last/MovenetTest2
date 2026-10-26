@@ -29,7 +29,7 @@ MOTION_RATIO = 0.009    # adaptive gate based on frame size
 
 
 EDGES = [
-    (0,1),(0,2),(1,3),(2,4),(0,5),(0,6),(5,7),(7,9),
+    (0,1),(0,2),(1,3),(2,4),(5,7),(7,9),
     (6,8),(8,10),(5,6),(5,11),(6,12),(11,12),(11,13),
     (13,15),(12,14),(14,16)
 ]
@@ -113,7 +113,7 @@ class MoveNetTuner:
         color = [(0, 255, 0), (255, 0, 0), (0, 255, 255)][p_id % 3]
         for y, x, c in kps:
             if c > CONF_THR:
-                cv2.circle(frame, (int(x * w), int(y * h)), 4, color, -1)
+                cv2.circle(frame, (int(x * w), int(y * h)), 3, color, -1)
         for p1, p2 in EDGES:
             if kps[p1, 2] > CONF_THR and kps[p2, 2] > CONF_THR:
                 cv2.line(
@@ -121,8 +121,23 @@ class MoveNetTuner:
                     (int(kps[p1, 1] * w), int(kps[p1, 0] * h)),
                     (int(kps[p2, 1] * w), int(kps[p2, 0] * h)),
                     color,
-                    2
+                    1
                 )
+        sh5_ok = kps[5, 2] > CONF_THR
+        sh6_ok = kps[6, 2] > CONF_THR
+        if kps[0, 2] > CONF_THR and (sh5_ok or sh6_ok):
+            if sh5_ok and sh6_ok:
+                mid_sh_x = int((kps[5, 1] + kps[6, 1]) * 0.5 * w)
+                mid_sh_y = int((kps[5, 0] + kps[6, 0]) * 0.5 * h)
+            elif sh5_ok:
+                mid_sh_x = int(kps[5, 1] * w)
+                mid_sh_y = int(kps[5, 0] * h)
+            else:
+                mid_sh_x = int(kps[6, 1] * w)
+                mid_sh_y = int(kps[6, 0] * h)
+            nose_x = int(kps[0, 1] * w)
+            nose_y = int(kps[0, 0] * h)
+            cv2.line(frame, (nose_x, nose_y), (mid_sh_x, mid_sh_y), color, 1)
 
     def run(self, camera_index=0, backend=None):
         if backend is None:

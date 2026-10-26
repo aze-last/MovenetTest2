@@ -17,22 +17,21 @@ audio_alerts:
     - 1400
     MEDIUM:
     - 900
-
 camera_reconnect:
   factor: 2.0
   initial_backoff: 1.0
   max_backoff: 60.0
 cloud_verifier:
-  enabled: false
-  base_url: https://api.xkiro.com/v1
-  model: vendor/model
-  timeout_s: 2.0
-  min_interval_s: 10.0
-  max_image_bytes: 400000
-  api_key_env: XKIRO_API_KEY
   api_key: ''
-  text_model: vendor/model
+  api_key_env: XKIRO_API_KEY
+  base_url: https://api.xkiro.com/v1
+  enabled: false
+  max_image_bytes: 400000
+  min_interval_s: 10.0
+  model: vendor/model
   report_summary_enabled: false
+  text_model: vendor/model
+  timeout_s: 2.0
 concealment:
   behavior:
     cooldown_frames: 60
@@ -86,12 +85,12 @@ motion_gate:
   motion_gate_movenet_enabled: true
   motion_gate_yolo_enabled: false
 movenet:
-  bbox_kp_conf: 0.25
-  coast_dedup_iou: 0.6
-  detection_hysteresis_frames: 30
-  ghost_kp_conf: 0.25
-  ghost_min_keypoints: 5
-  ghost_min_torso_keypoints: 2
+  bbox_kp_conf: 0.1
+  coast_dedup_iou: 0.35
+  detection_hysteresis_frames: 8
+  ghost_kp_conf: 0.12
+  ghost_min_keypoints: 3
+  ghost_min_torso_keypoints: 1
   skeleton_max_age_frames: 3
 performance:
   inference_queue_maxsize: 16
@@ -113,6 +112,11 @@ tracking:
     match_thresh: 0.5
     track_buffer: 45
     track_thresh: 0.2
+update:
+  check_on_startup: true
+  fetch_timeout_s: 15
+  manifest_url: ''
+  max_installer_bytes: 134217728
 yolo:
   hysteresis_dedup_iou: 0.5
   inference_imgsz: 960
@@ -127,8 +131,3 @@ yolo:
     track_low_thresh: 0.2
   tracker_isolation: per_camera
   untracked_grid_px: 96
-update:
-  check_on_startup: true
-  fetch_timeout_s: 15
-  manifest_url: ''
-  max_installer_bytes: 134217728

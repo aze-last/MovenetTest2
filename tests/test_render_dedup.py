@@ -78,3 +78,64 @@ def test_missing_source_key_treated_as_live():
          "box": [101, 101, 201, 201], "track_id": 8}
     drawable = CentralInferenceManager._contraband_for_render([a, b])
     assert a in drawable and b in drawable
+
+
+def test_bbox_overlap_calculation():
+    """Verify _bbox_overlap calculates both IoU and IoA (min-area overlap) accurately."""
+    b1 = (100, 100, 200, 200)
+    b2 = (100, 100, 200, 200)
+    iou, ioa = CentralInferenceManager._bbox_overlap(b1, b2)
+    assert iou == 1.0 and ioa == 1.0
+
+    # Small box completely inside big box: ioa must be 1.0
+    b_big = (100, 100, 300, 300)
+    b_small = (120, 120, 180, 180)
+    iou, ioa = CentralInferenceManager._bbox_overlap(b_big, b_small)
+    assert ioa == 1.0
+    assert iou < 0.3  # IoU is low due to large union, but IoA captures total containment
+
+    # Disjoint boxes
+    b_disjoint = (500, 500, 600, 600)
+    iou, ioa = CentralInferenceManager._bbox_overlap(b_big, b_disjoint)
+    assert iou == 0.0 and ioa == 0.0
+
+
+def test_incident_record_evidence_added_severity_signature():
+    """Verify handle_evidence_added accepts severity and arbitrary kwargs without TypeError."""
+    from monitor_app.incident_record import IncidentRecorder
+    recorder = IncidentRecorder("cam_1")
+    # Should execute without raising TypeError
+    recorder.handle_evidence_added("cam_1", "inc_123", "cellphone", [0.85], severity="HIGH", extra_meta=True)
+
+
+def test_decision_engine_ascii_threshold_formatting():
+    """Verify decision engine event labels use ASCII '>=' instead of Unicode '≥'."""
+    from monitor_app.decision import DecisionEngine
+    from monitor_app.evidence import BehaviorEvidence
+    class DummyPacket:
+        def __init__(self):
+            self.camera_id = "0"
+            self.frame = None
+            self.detections = {"contraband": [{"name": "cellphone", "confidence": 0.85}], "behavior": []}
+            self.behavior_evidence = [
+                BehaviorEvidence(
+                    stable_id=1,
+                    behavior_type="concealment",
+                    confidence=0.88,
+                    camera_id="0",
+                    frame_number=10,
+                    timestamp=0.0,
+                    sustained_frames=5,
+                    metadata={"fusion_confirmed": True}
+                )
+            ]
+            self.tracked_persons = []
+            self.timestamp = 0.0
+
+    engine = DecisionEngine()
+    packet = DummyPacket()
+    event_name, confs = engine.get_event_details(packet)
+    assert "≥" not in event_name, f"Found non-ASCII glyph in event_name: {event_name}"
+    assert ">=" in event_name
+    assert "Cellphone" in event_name and "Concealment" in event_name
+

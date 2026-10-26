@@ -53,7 +53,7 @@ class DecisionEngine:
             name = c.get('name', 'Item').capitalize()
             conf = float(c.get('confidence', 0.0))
             if conf > 0:
-                event_labels.append(f"{name} ({int(conf*100)}% ≥ 30%)")
+                event_labels.append(f"{name} ({int(conf*100)}% >= 30%)")
             else:
                 event_labels.append(name)
 
@@ -62,10 +62,10 @@ class DecisionEngine:
             b_type = evidence.behavior_type.capitalize()
             conf = float(evidence.confidence)
             if evidence.behavior_type == "concealment":
-                event_labels.append(f"Concealment ({int(conf*100)}% ≥ 75%)")
+                event_labels.append(f"Concealment ({int(conf*100)}% >= 75%)")
             elif "aggression" in evidence.behavior_type.lower() or "fight" in evidence.behavior_type.lower():
                 speed = evidence.supporting_metrics.get("speed", 0.0) if evidence.supporting_metrics else conf
-                event_labels.append(f"Aggression (Speed: {speed:.2f} ≥ 0.10)")
+                event_labels.append(f"Aggression (Speed: {speed:.2f} >= 0.10)")
             else:
                 event_labels.append(f"{b_type} ({int(conf*100)}%)")
 

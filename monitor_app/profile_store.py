@@ -195,6 +195,16 @@ def ensure_app_state():
             (json.dumps(DEFAULT_CUSTOM_SETTINGS), _now()),
         )
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ui_preferences (
+            pref_key TEXT PRIMARY KEY,
+            pref_value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -293,6 +303,41 @@ def get_user_by_username(username):
     row = conn.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
     conn.close()
     return row_to_dict(row)
+
+
+def get_ui_preference(pref_key, default_value=None):
+    ensure_app_state()
+    conn = _connect()
+    row = conn.execute("SELECT pref_value FROM ui_preferences WHERE pref_key = ?", (pref_key,)).fetchone()
+    conn.close()
+    if row:
+        return row["pref_value"]
+    return default_value
+
+
+def set_ui_preference(pref_key, pref_value):
+    ensure_app_state()
+    conn = _connect()
+    conn.execute(
+        """
+        INSERT INTO ui_preferences (pref_key, pref_value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(pref_key) DO UPDATE SET
+            pref_value = excluded.pref_value,
+            updated_at = excluded.updated_at
+        """,
+        (pref_key, str(pref_value), _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_appearance_mode():
+    return get_ui_preference("appearance_mode", "Dark")
+
+
+def set_appearance_mode(mode):
+    set_ui_preference("appearance_mode", mode)
 
 
 def authenticate_user(username, password):

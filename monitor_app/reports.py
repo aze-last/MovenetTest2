@@ -7,26 +7,26 @@ import customtkinter as ctk
 from monitor_app import profile_store
 
 
-class ReportsScreen(ttk.Frame):
+class ReportsScreen(ctk.CTkFrame):
     PALETTE = {
-        "page": "#10161d",
-        "panel": "#171f29",
-        "panel_alt": "#1c2531",
-        "card": "#1b2430",
-        "card_soft": "#202b38",
-        "surface": "#0d131a",
-        "paper": "#f4f7fb",
-        "paper_border": "#d5dce6",
-        "paper_text": "#112033",
-        "border": "#26384a",
-        "text": "#f3f7fb",
-        "muted": "#8da1b4",
-        "subtle": "#617487",
-        "accent": "#4f84bb",
-        "accent_hover": "#426f9b",
-        "success": "#42c08d",
-        "success_hover": "#32956b",
-        "warning": "#d7a75a",
+        "page": ("#edf2f7", "#10161d"),
+        "panel": ("#f8fafc", "#171f29"),
+        "panel_alt": ("#e2e8f0", "#1c2531"),
+        "card": ("#ffffff", "#1b2430"),
+        "card_soft": ("#f1f5f9", "#202b38"),
+        "surface": ("#ffffff", "#0d131a"),
+        "paper": ("#ffffff", "#151f2b"),
+        "paper_border": ("#cbd5e1", "#26384a"),
+        "paper_text": ("#0f172a", "#f3f7fb"),
+        "border": ("#cbd5e1", "#26384a"),
+        "text": ("#0f172a", "#f3f7fb"),
+        "muted": ("#64748b", "#8da1b4"),
+        "subtle": ("#94a3b8", "#617487"),
+        "accent": ("#1d4ed8", "#4f84bb"),
+        "accent_hover": ("#1e40af", "#426f9b"),
+        "success": ("#16a34a", "#42c08d"),
+        "success_hover": ("#15803d", "#32956b"),
+        "warning": ("#d97706", "#d7a75a"),
     }
 
     REPORT_TYPES = [
@@ -63,7 +63,7 @@ class ReportsScreen(ttk.Frame):
     }
 
     def __init__(self, parent):
-        super().__init__(parent)
+        super().__init__(parent, fg_color=self.PALETTE["page"], corner_radius=0)
         self.pack(fill="both", expand=True)
         self.branding = profile_store.get_branding()
 
@@ -86,7 +86,7 @@ class ReportsScreen(ttk.Frame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        self.page = ctk.CTkFrame(self, fg_color=self.PALETTE["page"], corner_radius=0)
+        self.page = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
         self.page.grid(row=0, column=0, sticky="nsew")
         self.page.grid_columnconfigure(0, weight=4, uniform="reports")
         self.page.grid_columnconfigure(1, weight=9, uniform="reports")
@@ -97,14 +97,18 @@ class ReportsScreen(ttk.Frame):
         self._build_preview_panel()
         self.generate_preview()
 
+    def apply_appearance_mode(self):
+        self.generate_preview()
+
     def _build_header(self):
         header = ctk.CTkFrame(
             self.page,
             fg_color=self.PALETTE["panel"],
-            corner_radius=26,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["border"],
         )
+
         header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=28, pady=(24, 18))
         header.grid_columnconfigure(0, weight=1)
 
@@ -153,7 +157,7 @@ class ReportsScreen(ttk.Frame):
             card = ctk.CTkFrame(
                 summary,
                 fg_color=self.PALETTE["card"],
-                corner_radius=18,
+                corner_radius=14,
                 border_width=1,
                 border_color=self.PALETTE["border"],
                 width=144,
@@ -192,7 +196,7 @@ class ReportsScreen(ttk.Frame):
         self.filter_panel = ctk.CTkFrame(
             self.page,
             fg_color=self.PALETTE["panel"],
-            corner_radius=24,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["border"],
             width=320,
@@ -283,7 +287,7 @@ class ReportsScreen(ttk.Frame):
         severity_wrap = ctk.CTkFrame(
             self.filter_panel,
             fg_color=self.PALETTE["card"],
-            corner_radius=18,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["border"],
         )
@@ -317,7 +321,7 @@ class ReportsScreen(ttk.Frame):
         note = ctk.CTkFrame(
             self.filter_panel,
             fg_color=self.PALETTE["card_soft"],
-            corner_radius=16,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["border"],
         )
@@ -388,7 +392,7 @@ class ReportsScreen(ttk.Frame):
         self.preview_panel = ctk.CTkFrame(
             self.page,
             fg_color=self.PALETTE["panel"],
-            corner_radius=24,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["border"],
         )
@@ -445,7 +449,7 @@ class ReportsScreen(ttk.Frame):
         paper_shell = ctk.CTkFrame(
             self.preview_panel,
             fg_color=self.PALETTE["surface"],
-            corner_radius=22,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["border"],
         )
@@ -456,7 +460,7 @@ class ReportsScreen(ttk.Frame):
         paper = ctk.CTkFrame(
             paper_shell,
             fg_color=self.PALETTE["paper"],
-            corner_radius=20,
+            corner_radius=14,
             border_width=1,
             border_color=self.PALETTE["paper_border"],
         )
@@ -470,8 +474,8 @@ class ReportsScreen(ttk.Frame):
             border_width=0,
             text_color=self.PALETTE["paper_text"],
             font=("Consolas", 12),
-            scrollbar_button_color="#b9c4d1",
-            scrollbar_button_hover_color="#98a9bc",
+            scrollbar_button_color=("#cbd5e1", "#26384a"),
+            scrollbar_button_hover_color=("#94a3b8", "#4f84bb"),
             activate_scrollbars=True,
         )
         self.preview_text.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)

@@ -66,17 +66,17 @@ class LocalMotionGater:
         
         # Set parameters based on sensitivity
         if profile == "high":
-            self.motion_threshold = 4500
-            self.motion_ratio = 0.009
+            self.motion_threshold = 1200
+            self.motion_ratio = 0.005
         elif profile == "low":
-            self.motion_threshold = 6000
+            self.motion_threshold = 3000
             self.motion_ratio = 0.012
         elif profile == "custom" and custom_vals:
-            self.motion_threshold = int(custom_vals.get("motion_threshold", 5000))
-            self.motion_ratio = float(custom_vals.get("motion_ratio", 0.010))
+            self.motion_threshold = int(custom_vals.get("motion_threshold", 1800))
+            self.motion_ratio = float(custom_vals.get("motion_ratio", 0.008))
         else: # medium (default)
-            self.motion_threshold = 5000
-            self.motion_ratio = 0.010
+            self.motion_threshold = 1800
+            self.motion_ratio = 0.008
 
     def _on_profile_event(self, profile="medium", custom_values=None, **kwargs):
         self.update_profile(profile, custom_values)

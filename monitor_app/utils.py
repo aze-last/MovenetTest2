@@ -199,22 +199,42 @@ class MockAI:
         return "None", False
 
 # --- UI Helpers ---
+def update_ttk_theme(root=None, mode=None):
+    """
+    Dynamically configures standard ttk styles to match Light or Dark mode.
+    """
+    if mode is None:
+        try:
+            import customtkinter as ctk
+            mode = ctk.get_appearance_mode()
+        except Exception:
+            mode = "Dark"
+
+    style = ttk.Style(root)
+    is_light = mode == "Light"
+
+    bg = "#edf2f7" if is_light else COLOR_BG_DARK
+    card_bg = "#ffffff" if is_light else COLOR_BG_LIGHT
+    fg = "#0f172a" if is_light else COLOR_TEXT_WHITE
+
+    style.configure("TFrame", background=bg)
+    style.configure("Card.TFrame", background=card_bg, relief="flat")
+    style.configure("TLabel", background=bg, foreground=fg, font=FONT_NORMAL)
+    style.configure("Header.TLabel", font=FONT_HEADER, background=bg, foreground=fg)
+    style.configure("SubHeader.TLabel", font=FONT_SUBHEADER, background=bg, foreground=fg)
+    style.configure("Card.TLabel", background=card_bg, foreground=fg)
+    style.configure("Bold.TLabel", font=FONT_BOLD, background=card_bg, foreground=fg)
+    style.configure("TEntry", fieldbackground=card_bg, foreground=fg, borderwidth=0)
+    return style
+
+
 def apply_dark_theme(root):
     """
-    Configures ttk styles for a dark theme look.
+    Configures ttk styles for theme look, adapting to current mode.
     """
     style = ttk.Style(root)
     style.theme_use('clam') # 'clam' is often a good base for custom coloring
-    
-    # Frames
-    style.configure("TFrame", background=COLOR_BG_DARK)
-    style.configure("Card.TFrame", background=COLOR_BG_LIGHT, relief="flat")
-    
-    # Labels
-    style.configure("TLabel", background=COLOR_BG_DARK, foreground=COLOR_TEXT_WHITE, font=FONT_NORMAL)
-    style.configure("Header.TLabel", font=FONT_HEADER, background=COLOR_BG_DARK, foreground=COLOR_TEXT_WHITE)
-    style.configure("SubHeader.TLabel", font=FONT_SUBHEADER, background=COLOR_BG_DARK, foreground=COLOR_TEXT_WHITE)
-    style.configure("Card.TLabel", background=COLOR_BG_LIGHT, foreground=COLOR_TEXT_WHITE)
+    update_ttk_theme(root)
     
     # Buttons
     style.configure("TButton", 
@@ -231,12 +251,54 @@ def apply_dark_theme(root):
     style.configure("Danger.TButton", background=COLOR_ALERT)
     style.map("Danger.TButton", background=[('active', '#c0392b')])
 
-    # Entry
-    style.configure("TEntry", fieldbackground=COLOR_BG_LIGHT, foreground=COLOR_TEXT_WHITE, borderwidth=0)
-    
-    style.configure("Bold.TLabel", font=FONT_BOLD, background=COLOR_BG_LIGHT, foreground=COLOR_TEXT_WHITE)
-
     return style
+
+
+def create_theme_icon(size=(20, 20)):
+    """
+    Creates an antialiased CTkImage for toggling themes.
+    - Light Mode displays a crescent moon (action: switch to dark).
+    - Dark Mode displays a warm radiant sun (action: switch to light).
+    """
+    import math
+    from PIL import Image, ImageDraw
+    import customtkinter as ctk
+
+    scale = 4
+    w, h = size[0] * scale, size[1] * scale
+
+    # --- Sun (for Dark mode: luminous warm sun) ---
+    sun = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw_sun = ImageDraw.Draw(sun)
+    cx, cy = w / 2, h / 2
+    r_core = w * 0.22
+    draw_sun.ellipse([cx - r_core, cy - r_core, cx + r_core, cy + r_core], fill="#f59e0b")
+    for i in range(8):
+        angle = i * (math.pi / 4)
+        x1 = cx + w * 0.31 * math.cos(angle)
+        y1 = cy + w * 0.31 * math.sin(angle)
+        x2 = cx + w * 0.44 * math.cos(angle)
+        y2 = cy + w * 0.44 * math.sin(angle)
+        draw_sun.line([x1, y1, x2, y2], fill="#f59e0b", width=int(scale * 1.8))
+    sun = sun.resize(size, Image.Resampling.LANCZOS)
+
+    # --- Moon (for Light mode: deep indigo/slate crescent moon) ---
+    moon = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw_moon = ImageDraw.Draw(moon)
+    m_r = w * 0.36
+    draw_moon.ellipse([cx - m_r, cy - m_r, cx + m_r, cy + m_r], fill="#0284c7")
+    cut_x = cx + w * 0.16
+    cut_y = cy - w * 0.10
+    cut_r = w * 0.32
+    draw_moon.ellipse(
+        [cut_x - cut_r, cut_y - cut_r, cut_x + cut_r, cut_y + cut_r],
+        fill=(0, 0, 0, 0)
+    )
+    moon = moon.resize(size, Image.Resampling.LANCZOS)
+
+    return ctk.CTkImage(light_image=moon, dark_image=sun, size=size)
+
+
 
 def create_placeholder_image(width, height, text="No Signal", color=COLOR_BG_LIGHT):
     """

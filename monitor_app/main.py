@@ -53,18 +53,21 @@ if not getattr(sys, 'frozen', False):
 from monitor_app import utils, auth, camera_view, incidents, dashboard, settings, reports
 from monitor_app import profile_store
 
+
 class CellWatchApp(ctk.CTk):
     NAV_PALETTE = {
-        "bar": "#111821",
-        "bar_border": "#243648",
-        "button": "#18212b",
-        "button_hover": "#213244",
-        "active": "#4f84bb",
-        "active_hover": "#426f9b",
-        "text": "#f3f7fb",
-        "muted": "#8da1b4",
-        "warn": "#8e5a5a",
-        "warn_hover": "#a46363",
+        "bar": ("#ffffff", "#111821"),
+        "bar_border": ("#e2e8f0", "#243648"),
+        "button": ("#f1f5f9", "#18212b"),
+        "button_hover": ("#e2e8f0", "#213244"),
+        "active": ("#1d4ed8", "#4f84bb"),
+        "active_hover": ("#1e40af", "#426f9b"),
+        "active_text": ("#ffffff", "#ffffff"),
+        "text": ("#0f172a", "#f3f7fb"),
+        "muted": ("#64748b", "#8da1b4"),
+        "warn": ("#fee2e2", "#2a1b1f"),
+        "warn_hover": ("#fecaca", "#3d2229"),
+        "warn_text": ("#dc2626", "#f25c5c"),
     }
 
     def __init__(self):
@@ -86,6 +89,8 @@ class CellWatchApp(ctk.CTk):
         self.attributes("-alpha", 1.0) # Ensure window is 100% opaque
         
         # Apply theme
+        saved_mode = profile_store.get_appearance_mode()
+        ctk.set_appearance_mode(saved_mode)
         self.style = utils.apply_dark_theme(self)
         
         # Start Telemetry Engine
@@ -106,7 +111,7 @@ class CellWatchApp(ctk.CTk):
         self._tools_btn = None
         
         # Main container for all screens
-        self.container = tk.Frame(self, bg=utils.COLOR_BG_DARK)
+        self.container = ctk.CTkFrame(self, fg_color=("#edf2f7", "#06090c"), corner_radius=0)
         self.container.pack(fill="both", expand=True)
         
         # Navigation bar (initially hidden, shown after login)
@@ -229,15 +234,32 @@ class CellWatchApp(ctk.CTk):
         tools_btn.pack(side="left", padx=(0, 10))
         self._tools_btn = tools_btn
 
+        # ── Theme Toggle Button with Icon ──
+        self.theme_icon = utils.create_theme_icon(size=(18, 18))
+        theme_btn = ctk.CTkButton(
+            btn_frame,
+            text="",
+            image=self.theme_icon,
+            width=44,
+            height=40,
+            corner_radius=12,
+            fg_color=self.NAV_PALETTE["button"],
+            hover_color=self.NAV_PALETTE["button_hover"],
+            command=self.toggle_appearance_mode,
+        )
+        theme_btn.pack(side="left", padx=(0, 10))
+        self._theme_btn = theme_btn
+
+
         logout_btn = ctk.CTkButton(
             btn_frame,
             text="Logout",
             width=96,
             height=40,
             corner_radius=12,
-            fg_color="#2a1b1f",
+            fg_color=self.NAV_PALETTE["warn"],
             hover_color=self.NAV_PALETTE["warn_hover"],
-            text_color=self.NAV_PALETTE["text"],
+            text_color=self.NAV_PALETTE["warn_text"],
             font=("Segoe UI Semibold", 12),
             command=self.logout,
         )
@@ -251,13 +273,34 @@ class CellWatchApp(ctk.CTk):
         )
         divider.pack(side="bottom", fill="x")
 
+    def _get_nav_theme_text(self):
+        mode = ctk.get_appearance_mode()
+        return "🌙 Dark" if mode == "Dark" else "☀️ Light"
+
+    def toggle_appearance_mode(self):
+        current = ctk.get_appearance_mode()
+        new_mode = "Light" if current == "Dark" else "Dark"
+        ctk.set_appearance_mode(new_mode)
+        profile_store.set_appearance_mode(new_mode)
+        utils.update_ttk_theme(self, new_mode)
+        if hasattr(self, "_theme_btn") and self._theme_btn and self._theme_btn.winfo_exists():
+            self._theme_btn.configure(image=self.theme_icon, text="")
+        if self.current_screen:
+            self._set_active_nav(self.current_screen)
+        if hasattr(self, "active_screen_widget") and self.active_screen_widget:
+            if hasattr(self.active_screen_widget, "apply_appearance_mode"):
+                try:
+                    self.active_screen_widget.apply_appearance_mode()
+                except Exception:
+                    pass
+
     def _set_active_nav(self, screen_name):
         for name, button in self.nav_buttons.items():
             if name == screen_name:
                 button.configure(
                     fg_color=self.NAV_PALETTE["active"],
                     hover_color=self.NAV_PALETTE["active_hover"],
-                    text_color=self.NAV_PALETTE["text"],
+                    text_color=self.NAV_PALETTE["active_text"],
                 )
             else:
                 button.configure(

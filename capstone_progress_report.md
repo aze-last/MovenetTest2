@@ -68,6 +68,28 @@ Based on the decisions ratified in the `GEMINI.md` and `CLAUDE.md` constitution 
 - **`monitor_app/offline_inference.py`**: Injected index/timestamp metadata and added contraband rendering.
 - **`monitor_app/movenet_tuner.py`**: Updated standalone tuning script to match ONNX architecture.
 - **`monitor_app/settings.py`**: Updated UI configuration strings to "YOLO26s".
+## [2026-10-26] Autonomous Worker & Designer-Worker: Clean Metric Cards (Colored Underline Removal) & Dynamic Vector Theme Icons
+- **Multi-Agent Orchestration Workflow:**
+  - **Designer-Worker (`agy` audit):** Evaluated visual hierarchy on the Operational Status panel. Identified that the colored bottom accent lines (`glow = ctk.CTkFrame(card, fg_color=accent, height=3)`) beneath the 4 primary metric cards created visual competition with the dynamic progress bars inside the System Vitals panel (`Processor`, `Memory`, `Disk`, `Net`). In an institutional control-room setting, having static colored underlines distorts operator glanceability and mimics progress bars. Furthermore, audited the theme toggle button and recommended replacing raw text strings (`"🌙 Dark"`, `"☀️ Light"`) with crisp vector-rendered theme icons.
+  - **Coder-Worker (Autonomous Worker):** Removed the colored lines from `monitor_app/dashboard.py`, engineered a pure-Python high-resolution vector icon generator in `monitor_app/utils.py`, wired `CTkImage` into `monitor_app/main.py` and `monitor_app/auth.py`, and authored regression tests in `tests/test_dashboard_incidents_ui.py`.
+- **`monitor_app/dashboard.py` (Lines 127–135):**
+  - **Removed Colored Bottom Underline:** Removed the bottom accent bar (`glow = ctk.CTkFrame(card, fg_color=accent, height=3, corner_radius=10)`) from each of the 4 operational status metric cards (`Active Feeds`, `Incidents`, `Live Alerts`, `System Uptime`).
+  - **Purpose:** Eliminates visual noise and prevents false affordances where static accent lines competed with the operational threshold bars in System Vitals. The cards now feature clean, disciplined institutional surface elevation without decorative distractions.
+- **`monitor_app/utils.py` (Lines 257–302):**
+  - **Dynamic Theme Icon Generator (`create_theme_icon`):** Implemented `create_theme_icon(size=(20, 20))` using PIL `ImageDraw` with 4x supersampled geometry and Lanczos downsampling (`Image.Resampling.LANCZOS`). Renders a deep azure crescent moon (`#2563eb`) with an antialiased inner eclipse cutout for Light Mode, and a vibrant golden sun (`#f59e0b`) with a central core disc and 8 radial rays for Dark Mode.
+  - **Purpose:** Produces retina-sharp vector icons wrapped in a single `ctk.CTkImage(light_image=moon, dark_image=sun)` without external SVG parsers, TTF icon fonts, or raster assets, adhering strictly to Rule 8 (Dependency Freeze). CustomTkinter automatically handles seamless icon swapping upon `set_appearance_mode()` calls.
+- **`monitor_app/main.py` (Lines 237–252, 286):**
+  - **Icon-Only Global Navigation Toggle:** Replaced text-based toggle button with `self._theme_btn = ctk.CTkButton(..., image=self.theme_icon, text="", width=44, height=40)`. Updated `toggle_appearance_mode()` to preserve tooltip instructions while toggling.
+  - **Purpose:** Provides a modern, space-efficient, institutional icon toggle in the primary command navigation bar.
+- **`monitor_app/auth.py` (Lines 5, 168–182, 354–365):**
+  - **Login Screen Theme Icon Integration:** Imported `utils`, created `self.theme_icon = utils.create_theme_icon(size=(18, 18))`, and configured `self.btn_theme_toggle` with `image=self.theme_icon`, `compound="left"`, and dynamic caption update.
+  - **Purpose:** Unifies the visual design language across pre-authentication and post-authentication application screens.
+- **`tests/test_dashboard_incidents_ui.py` (Lines 76–94):**
+  - **Change:** Added `test_theme_icon_and_clean_metric_cards(tk_root)` validating that `create_theme_icon()` returns a valid `ctk.CTkImage` with matching light/dark geometry and confirming that `DashboardScreen` metric cards contain no underline frame elements.
+- **Verification:**
+  - Ran `pytest tests/test_dashboard_incidents_ui.py` — 6 passed in 7.42s.
+  - Full test suite: **115 passed in 19.74s** (0 regressions).
+  - Mechanical gate `.agents/team/diff-scan.ps1`: **`RESULT: GREEN`**.
 - **`CellWatch.spec`**: Configuration for standalone PyInstaller builds.
 - **`CLAUDE.md` / `GEMINI.md`**: Updated to enforce the new ONNX/YOLO26s standards.
 - **`capstone_progress_report.md`**: Rewritten to comprehensively log the transition to the distributable ONNX/TRT architecture.
@@ -418,3 +440,155 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
   - **Purpose:** Prevents gate false positives on internal test checklists while ensuring tests execute in the target Python 3.10 virtual environment.
 - **Verification:** Executed `diff-scan.ps1` (`RESULT: GREEN`) and full test suite (`pytest tests/`) — **102 passed in 11.13s**.
 
+## [2026-10-26] Autonomous Worker & Designer-Worker: UI Audit & Dual-Mode Login Screen Implementation
+- **Application Page & Dialog Architecture Catalog:**
+  - Enumerated full 12-page/dialog map across Primary Screens (Login Screen, Dashboard, Live Monitor, Incidents, Reports, Settings-Monitoring, Settings-Profile) and Tools/Forensic Modals (Benchmark Center, Offline Analysis Center, Dataset Recorder, MoveNet Multipose Tuner, Software Update Dialog).
+- **`monitor_app/profile_store.py` (Lines 198–207, 314–348):**
+  - **Change:** Created `ui_preferences` table in `app_state.db` (`pref_key TEXT PRIMARY KEY, pref_value TEXT NOT NULL, updated_at TEXT NOT NULL`). Added `get_ui_preference()`, `set_ui_preference()`, `get_appearance_mode()`, and `set_appearance_mode()`.
+  - **Purpose:** Adheres to Rule 4 (Dual Database Architecture). Persists operator interface theme preferences (`Dark` / `Light`) inside `app_state.db` across sessions without polluting engineering config or incidents DB.
+- **`monitor_app/main.py` (Lines 88–91):**
+  - **Change:** Initialized `saved_mode = profile_store.get_appearance_mode()` and applied `ctk.set_appearance_mode(saved_mode)` on main window creation.
+  - **Purpose:** Restores operator's saved appearance mode seamlessly on application startup.
+- **`monitor_app/auth.py` (Lines 8–16, 20–38, 40–44, 149–166, 174–177, 234–329, 350–435):**
+  - **Removed Hardcoded Dark Mode:** Removed module-level `ctk.set_appearance_mode("Dark")`. Appearance mode is now loaded dynamically from `profile_store.get_appearance_mode()`.
+  - **Dual-Mode Palette:** Refactored `PALETTE` tokens into `(light_mode, dark_mode)` tuples across all background surfaces (`#edf2f7`, `#06090c`), hero panels (`#e2e8f0`, `#0a0e13`), cards (`#ffffff`, `#121a24`), input fields (`#f8fafc`, `#182330`), text levels, and alert states.
+  - **Theme Toggle Button:** Added top-right interactive theme toggle (`🌙 Dark Mode` / `☀️ Light Mode`) with 0ms visual feedback and persistent SQLite state sync.
+  - **Direct Autofocus:** Resolved focus entrapment on container `CTkFrame` by storing direct reference `self.entry_user` (`CTkEntry`) and scheduling `self.after(60, self.entry_user.focus_set)`.
+  - **Inline Password Reveal Toggle:** Added `self.btn_show_pass` ("Show" / "Hide") with internal `self._password_masked` state tracking to allow operators to inspect complex passwords under low lighting without layout degradation.
+  - **Caps Lock Detection:** Added `_is_caps_lock_on()` using standard library Windows `ctypes.windll.user32.GetKeyState(0x14)` and bound to `<Key>`, `<FocusIn>`, `<FocusOut>` to present an instant `⚠ CAPS LOCK IS ON` warning banner.
+  - **Zero Cumulative Layout Shift (CLS):** Pre-allocated fixed-height status slot (`self.status_container`, `height=34`, `pack_propagate(False)`), eliminating layout jumping when errors display.
+  - **Defensive Busy State:** Configured `self.btn_login` to disable with `"VERIFYING..."` and `"VERIFIED - CONNECTING..."` during authentication to eliminate double-clicks.
+  - **Institutional Geometry:** Adjusted `login_card` `corner_radius=14` for disciplined control-room aesthetic.
+- **`tests/test_auth_ui.py`:**
+  - **Change:** Created test suite covering appearance mode persistence in SQLite, Caps Lock detection, dual-mode palette tuples, password visibility toggle, zero CLS status container, and appearance mode switching.
+- **Verification:** Ran `.agents/team/diff-scan.ps1` (`RESULT: GREEN`) and pytest suite (`pytest tests/`) — **103 passed in 12.22s**.
+
+## [2026-10-26] Autonomous Worker & Designer-Worker: Dual-Mode UI Implementation for Dashboard & Incidents
+- **Multi-Agent Orchestration Workflow:**
+  - **Designer-Worker (`agy` audit):** Conducted design and accessibility audit of Navigation Shell, Dashboard (`monitor_app/dashboard.py`), and Incidents Center (`monitor_app/incidents.py`). Identified hardcoded dark tokens, lack of an omnipresent theme switcher on the main navigation bar, and non-adaptive `ttk.Treeview` tables requiring explicit dynamic re-styling. Recommended standardizing oversized border radiuses (20–24px) down to institutional 14px.
+  - **Kiro-Planner (`kiro-cli`):** Generated formal architectural specification in `PLAN.md` breaking execution into T1 (Top Navigation Shell), T2 (Dashboard), T3 (Incidents), T4 (Unit Tests), and T5 (Mechanical Gate Verification).
+  - **Coder-Worker (Autonomous Worker):** Implemented changes across `monitor_app/main.py`, `monitor_app/dashboard.py`, and `monitor_app/incidents.py`.
+- **`monitor_app/main.py` (Lines 56–70, 114, 237–250, 258–278, 280–295):**
+  - **Dual-Mode `NAV_PALETTE`:** Converted all navigation bar palette tokens (`bar`, `bar_border`, `button`, `button_hover`, `active`, `active_hover`, `text`, `muted`, `warn`, `warn_hover`) into dual-mode `(light, dark)` tuples. Added `active_text` and `warn_text` for high contrast compliance.
+  - **Container Adaptation (Line 114):** Converted raw `tk.Frame` `self.container` to `ctk.CTkFrame(self, fg_color=("#edf2f7", "#06090c"), corner_radius=0)`.
+  - **Omnipresent Theme Switcher (Lines 237–250):** Added `self._theme_btn` to the global top navigation bar between `Tools ▾` and `Logout`, displaying `🌙 Dark` or `☀️ Light`.
+  - **Dynamic Theme Dispatcher (Lines 258–278):** Implemented `toggle_appearance_mode()` to toggle CustomTkinter mode, persist state in `app_state.db` via `profile_store.set_appearance_mode()`, update active navigation button colors, and invoke `apply_appearance_mode()` on `self.active_screen_widget` if implemented.
+  - **Active Button State (Lines 280–295):** Updated `_set_active_nav()` to use `self.NAV_PALETTE["active_text"]` ensuring crisp contrast across Light and Dark backgrounds.
+- **`monitor_app/dashboard.py` (Lines 14–27, 122, 167, 204, 344–357):**
+  - **Dual-Mode `PALETTE`:** Converted all dashboard palette tokens (`page`, `panel`, `card`, `border`, `accent`, `accent_glow`, `text_main`, `text_dim`, `text_muted`, `success`, `warning`, `danger`) into `(light, dark)` tuples.
+  - **Institutional Radius:** Standardized corner radii on metric cards, `health_box`, and `ledger_box` from 16/20px to 14px.
+  - **Defensive Telemetry Guard:** Enhanced `_measure_latency_ms()` socket closure in a guarded `finally` block to prevent unhandled socket teardown exceptions.
+- **`monitor_app/incidents.py` (Lines 13–29, 114, 160, 209, 239–241, 332, 452, 890–944, 991, 1025, 1062):**
+  - **Dual-Mode `PALETTE`:** Converted all incidents palette tokens (`page`, `panel`, `panel_alt`, `card`, `card_soft`, `surface`, `border`, `text`, `muted`, `subtle`, `accent`, `accent_hover`, `success`, `warning`, `danger`) into `(light, dark)` tuples.
+  - **Institutional Geometry:** Standardized corner radii across header, summary cards, tabview, left panel, details card, and table card from 18/24px to 14px.
+  - **Dynamic `ttk.Treeview` Styling:** Added `apply_appearance_mode()` hook to `IncidentsScreen` and `IncidentLogTable`. Implemented `_configure_tree_style()` and `_configure_tree_tags(is_light)` to dynamically configure `ttk.Style` (`background`, `foreground`, `fieldbackground`, `Heading`, selected colors) and status tag colors (`CONFIRMED`, `FALSE ALARM`, `NEEDS REVIEW`, `PENDING`) using single hex colors derived from active appearance mode.
+  - **Tkinter Color Tuple Crash Fix (Line 1025):** Replaced `table_wrap = tk.Frame(table_card, bg=PALETTE["panel"])` with `ctk.CTkFrame(table_card, fg_color="transparent")`, preventing `_tkinter.TclError: invalid color name` crash.
+- **`tests/test_dashboard_incidents_ui.py`:**
+  - **Change:** Authored 5 automated unit tests validating palette dual-mode tuple invariants for navigation, dashboard, and incidents; verifying screen initialization; and testing dynamic Treeview style re-configuration upon mode switching.
+- **Verification:** Ran pytest suite (`pytest tests/test_dashboard_incidents_ui.py`) — 5 passed in 6.14s. Full test suite (`pytest tests/`) — **108 passed in 13.64s**. Mechanical gate `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`**.
+
+## [2026-10-26] Autonomous Worker & Designer-Worker: Incidents Light Background Fix, Reports & Settings Dual-Mode Implementation
+- **Multi-Agent Orchestration & Defect Diagnosis:**
+  - **Defect Diagnosis (`agy` audit):** Diagnosed the black margin/background defect on the Incident Review Center in Light Mode. Root cause: `IncidentsScreen` inherited from `ttk.Frame`. A `ttk.Frame` lacks CustomTkinter `fg_color` handling and inherited the default Tkinter `TFrame` style which was hardcoded to `#1e1e1e`. This left all outer margins, header borders, and the background behind `CTkTabview` segmented buttons pitch black.
+  - **Kiro-Planner (`kiro-cli`):** Authored Track 2 in `PLAN.md` covering T5 (Incident Screen CTkFrame conversion & TTK theme updater), T6 (Reports Screen Dual-Mode), T7 (Settings Screen Dual-Mode & Treeview), and T8 (Automated UI Test Suite).
+  - **Coder-Worker (Autonomous Worker):** Implemented systemic fixes across `monitor_app/incidents.py`, `monitor_app/utils.py`, `monitor_app/main.py`, `monitor_app/reports.py`, and `monitor_app/settings.py`.
+- **`monitor_app/incidents.py` (Lines 88–91):**
+  - **Change:** Changed `class IncidentsScreen(ttk.Frame)` to `class IncidentsScreen(ctk.CTkFrame)` and called `super().__init__(parent, fg_color=PALETTE["page"], corner_radius=0)`.
+  - **Purpose:** Eliminates black background bleed-through in Light Mode. The entire Incidents screen background now inherits `PALETTE["page"]` (`#edf2f7` in Light Mode, `#10161d` in Dark Mode), providing seamless edge-to-edge institutional contrast.
+- **`monitor_app/utils.py` (Lines 202–231):**
+  - **Change:** Added `update_ttk_theme(root=None, mode=None)` which dynamically updates standard Tkinter `TFrame` (`#edf2f7` vs `#1e1e1e`), `TLabel`, `Header.TLabel`, `SubHeader.TLabel`, `Card.TLabel`, `Bold.TLabel`, and `TEntry`. Integrated into `apply_dark_theme(root)`.
+  - **Purpose:** Safeguards all legacy or embedded standard Tkinter widgets from rendering hardcoded dark styles when running in Light Mode.
+- **`monitor_app/main.py` (Line 284):**
+  - **Change:** Added `utils.update_ttk_theme(self, new_mode)` to `toggle_appearance_mode()`.
+  - **Purpose:** Ensures standard Tkinter styles update simultaneously with CustomTkinter widget redraws when the operator toggles the appearance mode.
+- **`monitor_app/reports.py` (Lines 10–30, 65, 89, 97–100, 160, 199, 290, 324, 395, 452, 463, 477–478):**
+  - **Dual-Mode `PALETTE`:** Converted all palette tokens (`page`, `panel`, `panel_alt`, `card`, `card_soft`, `surface`, `paper`, `paper_border`, `paper_text`, `border`, `text`, `muted`, `subtle`, `accent`, `accent_hover`, `success`, `success_hover`, `warning`) to `(light, dark)` tuples.
+  - **CTkFrame Inheritance:** Converted `class ReportsScreen(ttk.Frame)` to `class ReportsScreen(ctk.CTkFrame)` with `fg_color=self.PALETTE["page"]`.
+  - **Institutional Radii:** Standardized corner radii across header, filter panel, summary cards, severity wrap, note card, preview panel, paper shell, and paper container to 14px.
+  - **Dynamic Scrollbar & Preview Refresh:** Added `apply_appearance_mode()` hook to re-render preview text upon theme toggling, and configured `scrollbar_button_color` with dual-mode tuples.
+- **`monitor_app/settings.py` (Lines 11–27, 47–71, 185, 226, 256, 305, 356, 361, 377, 396, 431, 674–730):**
+  - **Dual-Mode `PALETTE`:** Converted all settings palette tokens (`page`, `panel`, `panel_alt`, `card`, `card_soft`, `border`, `text`, `muted`, `subtle`, `accent`, `accent_hover`, `success`, `success_hover`, `warning`, `danger`) into `(light, dark)` tuples.
+  - **Adaptive `CTkTooltip`:** Upgraded tooltip to detect active appearance mode, dynamically rendering clean white card background with dark text in Light Mode, and deep slate in Dark Mode.
+  - **Dynamic `Accounts.Treeview` Styling:** Implemented dynamic `_configure_tree_style()`, `_configure_tree_tags(is_light)`, and `apply_appearance_mode()` so that the user directory table (`#ffffff` vs `#1b2430`) and status tags (`ACTIVE`, `DISABLED`) switch cleanly between Light and Dark modes.
+  - **Tkinter Color Tuple Crash Fix:** Replaced `table_wrap = tk.Frame(card, bg=PALETTE["panel"])` with `ctk.CTkFrame(card, fg_color="transparent")`.
+  - **Institutional Button & Radii:** Upgraded `self.account_disable_button` with dual-mode warning colors (`#fee2e2` / `#2a1b1f`), and standardized corner radii to 14px.
+- **`tests/test_reports_settings_ui.py`:**
+  - **Change:** Authored comprehensive test suite covering `ReportsScreen` palette tuples and preview state, `SettingsScreen` (both Profile and Monitoring modes) palette tuples and dynamic treeview styling, and `utils.update_ttk_theme()` color assertions.
+- **Verification:** Ran pytest suite (`pytest tests/test_reports_settings_ui.py`) — 6 passed in 2.24s. Full test suite (`pytest tests/`) — **114 passed in 18.32s** (0 regressions). Mechanical gate `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`**.
+
+## [2026-10-26] Autonomous Worker & Bug Hunter: MoveNet "Medium Profile" Zero-Detection Defect Diagnosis & AI Pipeline Calibration
+- **Defect Symptoms & User Issue:**
+  - When the operator or database set the AI profile to `medium`, all on-screen detections ceased ("everything wont start as in no detections on the screen").
+- **Root Cause Analysis (Empirical Diagnostic & Trace):**
+  - **Choke 1 (`CONF_THR = 0.22` in `ai_engine.py`):** In MoveNet MultiPose, 17 keypoints are estimated. In realistic CCTV jail cell perspectives (and desk/webcam scenarios), subjects are frequently seated on bunks or behind desks where hips/legs/feet are occluded. Unseen lower body keypoints evaluate to `0.00–0.02` confidence, pulling the entire 17-point mean confidence down to `0.08–0.12`. With `CONF_THR` hardcoded to `0.22` (or `0.25` on High), `np.mean(person[:, 2]) > CONF_THR` evaluated to `False` on 100% of frames, discarding every subject.
+  - **Choke 2 (`ghost_kp_conf = 0.25` in `config.yaml`):** The ghost filter required keypoint confidence > 0.25 and at least 2 torso points. At distance or with seated posture, shoulder keypoints yield ~`0.15–0.22`, resulting in `torso_count = 0 < 2`, rejecting legitimate persons as ghosts.
+  - **Choke 3 (Hardcoded `c > 0.3` in `draw_skeleton`):** `draw_skeleton` contained hardcoded `c > 0.3` for circle drawing and `kps[p1, 2] > 0.3 and kps[p2, 2] > 0.3` for bone drawing. Even when detections succeeded, zero skeletal points or lines were rendered on screen.
+  - **Choke 4 (`motion_threshold = 5000` / ratio 0.010):** Excessive motion gating required over 5000 pixels or 1.0% frame difference. Subtle human movement yielded 800–2500 pixels, reporting `is_moving = False`. Under `motion_gate_movenet_enabled = True`, `run_movenet` was suppressed completely.
+  - **Choke 5 (Parameter shadowing in `MotionOptimizedEngine.__init__`):** `custom_values` was defined explicitly in the function signature `def __init__(..., custom_values=None, **kwargs):`, but line 143 read `custom_vals = kwargs.get("custom_values")`. Because named kwargs are bound to explicit parameters, `custom_vals` was perpetually `None`.
+  - **Choke 6 (`track_id == -1` for untracked objects):** Detections without an active ByteTrack ID emitted `track_id: -1`, which was prone to collision in downstream alert routing and UI.
+- **Implemented Fixes & Calibrations:**
+  - **`monitor_app/ai_engine.py`:**
+    - Line 143: Fixed parameter extraction: `custom_vals = custom_values if custom_values is not None else kwargs.get("custom_values")`.
+    - Lines 152–195: Calibrated `_set_logic_sensitivity()` thresholds:
+      - `high`: `CONF_THR = 0.06`, `AGG_THR = 0.08`, `ACTIVE_THR = 0.04`, `ALERT_FRAMES = 2`, `motion_threshold = 1200`, `motion_ratio = 0.005`
+      - `medium`: `CONF_THR = 0.08`, `AGG_THR = 0.10`, `ACTIVE_THR = 0.05`, `ALERT_FRAMES = 3`, `motion_threshold = 1800`, `motion_ratio = 0.008`
+      - `low`: `CONF_THR = 0.12`, `AGG_THR = 0.15`, `ACTIVE_THR = 0.08`, `ALERT_FRAMES = 5`, `motion_threshold = 3000`, `motion_ratio = 0.012`
+      - `custom`: Added automatic scale conversion (`raw / 1000.0` if `raw > 1.0`) so UI pixel-speed sliders map safely to normalized frame-width speed without breaking classification.
+    - Lines 751–776: Derives a stable positive pseudo-track ID (`abs(hash(cache_key)) % 9000 + 1000`) for untracked detections to prevent `-1` propagation to UI and alerts.
+    - Lines 930–940: Replaced hardcoded `c > 0.3` in `draw_skeleton()` with `kp_conf = get_config("movenet", "bbox_kp_conf", 0.10)` for both circles and skeletal lines.
+  - **`config.yaml`:**
+    - Lines 88–93: Calibrated `movenet` section to support real-world CCTV/webcam distances and occlusions:
+      - `bbox_kp_conf: 0.10` (was 0.25)
+      - `ghost_kp_conf: 0.12` (was 0.25)
+      - `ghost_min_keypoints: 3` (was 5)
+      - `ghost_min_torso_keypoints: 1` (was 2)
+  - **`monitor_app/settings.py`:**
+    - Lines 451–461: Synchronized `self.PRESETS` with calibrated sensitivity thresholds across `high`, `medium`, and `low`.
+  - **`monitor_app/camera_view.py`:**
+    - Lines 68–79: Updated `LocalMotionGater.update_profile()` motion thresholds to 1200 (high), 1800 (medium), and 3000 (low) to keep camera feed gating synchronized with the AI engine.
+- **Verification & Empirical Validation:**
+  - **Live Camera Pipeline Benchmark:** Tested `CentralInferenceManager` on live webcam feed under the `medium` profile:
+    - Rendered person bounding boxes on **14 out of 15 frames** (93.3% continuous coverage).
+    - Asynchronous MoveNet CPU latency: **15.5 ms – 16.9 ms** (lightweight CPU footprint).
+    - TensorRT YOLO26s GPU latency: **31.8 ms – 42.6 ms** on NVIDIA RTX 2050 (target 20–30 FPS fully met).
+  - **Automated Regression Suite:** Ran `rtk test pytest tests/`: **115 passed, 0 failed in 12.02s**.
+  - **Mechanical Architectural Gate:** Executed `.agents/team/diff-scan.ps1`: **`RESULT: GREEN`**.
+
+## [2026-10-26] Autonomous Worker & Bug Hunter: CCTV Overlay De-Cluttering, Bounding Box Deduplication & Institutional Aesthetics Upgrade
+- **Issue & Operator Experience:**
+  - The live monitor overlay suffered from heavy visual clutter:
+    1. Multiple duplicate bounding boxes and ID badges (e.g., "ID 0" and "ID 1") stacked on top of the same human body.
+    2. Old coasted bounding boxes lingered on screen for over 1.2 seconds due to excessive hysteresis (30 frames).
+    3. Facial spiderweb lines: MoveNet skeleton edges connected nose directly to shoulders across both cheeks and mouth (`(0, 5)` and `(0, 6)`), defacing the subject's identity.
+    4. Text corruption: OpenCV Hershey font rendered Unicode `≥` as `???` (e.g. `(THR: ???30%)`).
+    5. Terminal crash: `TypeError: handle_evidence_added() got an unexpected keyword argument 'severity'` when `alert_manager.py` emitted evidence.
+- **Architectural Solutions & Changes Made:**
+  - **`monitor_app/incident_record.py` (Lines 54, 121–178):**
+    - Line 54: Added `self._lock = threading.Lock()` to `IncidentRecorder.__init__`.
+    - Line 121: Updated `handle_evidence_added(self, camera_id, incident_id, event_type, confidence_scores, severity=None, **kwargs)` to accept `severity` and arbitrary kwargs without raising `TypeError`.
+    - Lines 125–178: Synchronized `handle_evidence_added`, `handle_incident_stop`, `process_frame`, `trigger_recording`, and `stop_recording` with `with self._lock:` to ensure thread safety across the worker and camera capture threads.
+  - **`monitor_app/decision.py` (Lines 56, 65, 68):**
+    - Replaced Unicode glyph `≥` with standard ASCII `>=` across contraband (`name (conf% >= 30%)`), concealment (`Concealment (conf% >= 75%)`), and aggression labels (`Aggression (Speed: speed >= 0.10)`), preventing OpenCV `???` text rendering.
+  - **`monitor_app/central_inference.py` (Lines 241–260, 285–326, 345–425, 480–565):**
+    - Lines 241–260: Added `_bbox_overlap(box_a, box_b)` staticmethod returning `(iou, ioa_min)` to calculate geometric intersection and inclusion.
+    - Lines 285–326: Upgraded `_draw_contraband_boxes` with institutional CCTV aesthetics: 1px border with corner brackets and high-contrast dark pill badge (`(20, 20, 20)` background with alert border and anti-aliased text). Replaced `≥` with `>=` and clipped `bx1 = max(0, x1)`.
+    - Lines 345–425: Upgraded `_draw_person_box` with institutional CCTV styling: 1px bounding frame with corner brackets, high-contrast dark pill badge for `ID {stable_id}`, and dark pill badge for hand observations (`L: State | R: State`). Clipped `bx1` and `hx1` to prevent negative coordinates.
+    - Lines 480–565: In `_render_person_boxes`:
+      - Implemented live-person pairwise deduplication before drawing: computes bounding boxes for all live candidates and suppresses duplicate MoveNet detections on the same body if `iou >= 0.35` or `ioa >= 0.50`.
+      - Suppressed duplicate MoveNet skeletal drawing on overlapping live bodies.
+      - Tightened coasting suppression: cached `_bbox_overlap` to evaluate both `iou >= coast_thr` and `ioa >= 0.40`, preventing ghost boxes from lingering over live subjects.
+  - **`monitor_app/ai_engine.py` (Lines 149–150, 500–535, 960–975):**
+    - Lines 149–150: Removed facial diagonal cross edges `(0, 5)` (nose to left shoulder) and `(0, 6)` (nose to right shoulder) from `self.EDGES`.
+    - Lines 500–535: Upgraded NMS in `_run_movenet_logic`: evaluated bounding box IoU / IoA inclusion as well as centroid distance, and sorted by valid keypoint completeness, completely preventing split multi-slot detections of the same human body at the inference level.
+    - Lines 960–975: In `draw_skeleton()`: reduced keypoint circle radius to 3px, set bone line thickness to 1px, and rendered a clean vertical neck connector from nose `(0)` to shoulder midpoint `(5, 6)` (with single-shoulder fallback when one shoulder is occluded), keeping the face unobscured.
+  - **`monitor_app/movenet_tuner.py` (Lines 31–35, 126–135):**
+    - Synchronized `EDGES` and `draw_skeleton` with single-shoulder neck fallback and subtle keypoint rendering.
+  - **`config.yaml` (Lines 89–90):**
+    - `detection_hysteresis_frames`: Reduced from `30` to `8` (~0.25s) to eliminate 1.2-second ghost box lag.
+    - `coast_dedup_iou`: Tightened from `0.6` to `0.35` to ensure coasted boxes never duplicate live subjects.
+  - **`tests/test_render_dedup.py` (Lines 85–144):**
+    - Added regression tests `test_bbox_overlap_calculation`, `test_incident_record_evidence_added_severity_signature`, and `test_decision_engine_ascii_threshold_formatting`.
+- **Review & Verification:**
+  - Code-review & bug-hunter executed via `kiro-cli` (`kiro-cli chat --no-interactive`): verified thread-safety, coordinate clipping, and O(P²) / O(C×L) performance scalability.
+  - Unit Regression Test Suite: `rtk test pytest tests/` — **118 passed, 0 failed in 13.29s**.
+  - Mechanical Architectural Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`**.

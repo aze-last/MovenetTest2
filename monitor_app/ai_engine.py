@@ -140,53 +140,55 @@ class MotionOptimizedEngine:
         self.last_run = {}  # For throttling
         self.flicker_trace = bool(get_config("debug", "flicker_trace", False))  # Phase A diagnostic gate
 
-        custom_vals = kwargs.get("custom_values")
+        custom_vals = custom_values if custom_values is not None else kwargs.get("custom_values")
         self._set_logic_sensitivity(sensitivity, custom_vals)
         self._setup_hardware()
         self._load_models()
 
-        # Skeletal Edges (MoveNet standard)
-        self.EDGES = [(0, 1), (0, 2), (1, 3), (2, 4), (0, 5), (0, 6), (5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11),
+        # Skeletal Edges (MoveNet standard - without face-slashing diagonal edges)
+        self.EDGES = [(0, 1), (0, 2), (1, 3), (2, 4), (5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11),
                       (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
 
     def _set_logic_sensitivity(self, level, custom_values=None):
         if level == "high":
-            self.CONF_THR = 0.25
+            self.CONF_THR = 0.06
             self.AGG_THR = 0.08  # Normalized (8% of frame width/sec)
             self.ACTIVE_THR = 0.04
             self.ALERT_FRAMES = 2
-            self.motion_threshold = 4500
-            self.motion_ratio = 0.009
+            self.motion_threshold = 1200
+            self.motion_ratio = 0.005
             self.yolo_knife_conf = 0.30
             self.yolo_cell_conf = 0.30
             self.yolo_fallback_conf = 0.50
         elif level == "low":
-            self.CONF_THR = 0.18
+            self.CONF_THR = 0.12
             self.AGG_THR = 0.15
             self.ACTIVE_THR = 0.08
             self.ALERT_FRAMES = 5
-            self.motion_threshold = 6000
+            self.motion_threshold = 3000
             self.motion_ratio = 0.012
             self.yolo_knife_conf = 0.40
             self.yolo_cell_conf = 0.40
             self.yolo_fallback_conf = 0.60
         elif level == "custom" and custom_values:
-            self.CONF_THR = float(custom_values.get("conf_thr", 0.22))
-            self.AGG_THR = float(custom_values.get("agg_thr", 0.10))
-            self.ACTIVE_THR = float(custom_values.get("active_thr", 0.05))
+            self.CONF_THR = float(custom_values.get("conf_thr", 0.08))
+            raw_agg = float(custom_values.get("agg_thr", 0.10))
+            self.AGG_THR = raw_agg if raw_agg <= 1.0 else (raw_agg / 1000.0)
+            raw_act = float(custom_values.get("active_thr", 0.05))
+            self.ACTIVE_THR = raw_act if raw_act <= 1.0 else (raw_act / 1000.0)
             self.ALERT_FRAMES = int(custom_values.get("alert_frames", 3))
-            self.motion_threshold = int(custom_values.get("motion_threshold", 5000))
-            self.motion_ratio = float(custom_values.get("motion_ratio", 0.010))
+            self.motion_threshold = int(custom_values.get("motion_threshold", 1800))
+            self.motion_ratio = float(custom_values.get("motion_ratio", 0.008))
             self.yolo_knife_conf = float(custom_values.get("yolo_knife_conf", 0.30))
             self.yolo_cell_conf = float(custom_values.get("yolo_cell_conf", 0.30))
             self.yolo_fallback_conf = float(custom_values.get("yolo_fallback_conf", 0.50))
         else:  # medium (default)
-            self.CONF_THR = 0.22
+            self.CONF_THR = 0.08
             self.AGG_THR = 0.10
             self.ACTIVE_THR = 0.05
             self.ALERT_FRAMES = 3
-            self.motion_threshold = 5000
-            self.motion_ratio = 0.010
+            self.motion_threshold = 1800
+            self.motion_ratio = 0.008
             self.yolo_knife_conf = 0.30
             self.yolo_cell_conf = 0.30
             self.yolo_fallback_conf = 0.50
@@ -495,27 +497,53 @@ class MotionOptimizedEngine:
 
                     raw_detected.append((person, i, hip_centroid, conf))
 
-            # NMS: suppress duplicate detections of the same person (split detections)
-            # If two detections have centroids within 15% of frame width, keep the higher-confidence one
+            # Robust NMS: suppress duplicate detections of the same person (split detections)
+            # Evaluates bounding box IoU / IoA inclusion as well as centroid distance
             frame_h, frame_w = res["frame"].shape[:2]
             nms_threshold_px = 0.15 * frame_w
+            bboxes = [MotionOptimizedEngine.compute_bbox_from_keypoints(d[0], (frame_h, frame_w)) for d in raw_detected]
             suppressed = set()
             for i_det in range(len(raw_detected)):
                 if i_det in suppressed:
                     continue
+                b_i = bboxes[i_det]
                 for j_det in range(i_det + 1, len(raw_detected)):
                     if j_det in suppressed:
                         continue
+                    b_j = bboxes[j_det]
                     cx_i, cy_i = raw_detected[i_det][2]
                     cx_j, cy_j = raw_detected[j_det][2]
                     dist_px = (((cx_i - cx_j) * frame_w) ** 2 + ((cy_i - cy_j) * frame_h) ** 2) ** 0.5
-                    if dist_px < nms_threshold_px:
-                        # Suppress the lower-confidence detection
-                        if raw_detected[i_det][3] >= raw_detected[j_det][3]:
+
+                    is_dup = dist_px < nms_threshold_px
+                    if not is_dup and b_i and b_j:
+                        x1 = max(b_i[0], b_j[0])
+                        y1 = max(b_i[1], b_j[1])
+                        x2 = min(b_i[2], b_j[2])
+                        y2 = min(b_i[3], b_j[3])
+                        inter = max(0, x2 - x1) * max(0, y2 - y1)
+                        if inter > 0:
+                            area_i = max(1, (b_i[2] - b_i[0]) * (b_i[3] - b_i[1]))
+                            area_j = max(1, (b_j[2] - b_j[0]) * (b_j[3] - b_j[1]))
+                            iou = inter / (area_i + area_j - inter)
+                            ioa_min = inter / min(area_i, area_j)
+                            if iou > 0.30 or ioa_min > 0.50:
+                                is_dup = True
+
+                    if is_dup:
+                        # Prioritize detection with more valid keypoints (more complete body pose)
+                        n_kps_i = sum(1 for kp in raw_detected[i_det][0] if kp[2] > ghost_kp_conf)
+                        n_kps_j = sum(1 for kp in raw_detected[j_det][0] if kp[2] > ghost_kp_conf)
+                        if n_kps_i >= n_kps_j + 2:
+                            suppressed.add(j_det)
+                        elif n_kps_j >= n_kps_i + 2:
+                            suppressed.add(i_det)
+                            break
+                        elif raw_detected[i_det][3] >= raw_detected[j_det][3]:
                             suppressed.add(j_det)
                         else:
                             suppressed.add(i_det)
-                            break  # i_det is suppressed, no need to check further
+                            break
 
             raw_detected = [d for idx, d in enumerate(raw_detected) if idx not in suppressed]
 
@@ -750,9 +778,11 @@ class MotionOptimizedEngine:
                             # stable hysteresis key instead of a fresh key every frame.
                             if track_id != -1:
                                 cache_key = track_id
+                                effective_track_id = track_id
                             else:
                                 grid_px = get_config("yolo", "untracked_grid_px", 96)
                                 cache_key = self._untracked_cache_key(cls_id, x1, y1, x2, y2, grid_px)
+                                effective_track_id = abs(hash(cache_key)) % 9000 + 1000
                             current_det_keys.add(cache_key)
                             
                             # Update hysteresis cache
@@ -762,7 +792,7 @@ class MotionOptimizedEngine:
                             self.yolo_hysteresis[cam_id][cache_key] = {
                                 "conf": conf,
                                 "box": [x1, y1, x2, y2],
-                                "track_id": track_id,
+                                "track_id": effective_track_id,
                                 "cls_id": cls_id,
                                 "ttl": 5  # Persist for 5 frames
                             }
@@ -771,7 +801,7 @@ class MotionOptimizedEngine:
                                 "name": CLASS_NAMES[cls_id],
                                 "conf": conf,
                                 "box": [x1, y1, x2, y2],
-                                "track_id": track_id,
+                                "track_id": effective_track_id,
                                 "source": "combined"
                             })
                             
@@ -922,12 +952,31 @@ class MotionOptimizedEngine:
     def draw_skeleton(self, frame, kps, p_id):
         h, w = frame.shape[:2]
         color = [(0, 255, 0), (255, 0, 0), (0, 255, 255)][p_id % 3]
+        kp_conf = get_config("movenet", "bbox_kp_conf", 0.10)
         for y, x, c in kps:
-            if c > 0.3: cv2.circle(frame, (int(x * w), int(y * h)), 4, color, -1)
+            if c > kp_conf:
+                cv2.circle(frame, (int(x * w), int(y * h)), 3, color, -1)
         for p1, p2 in self.EDGES:
-            if kps[p1, 2] > 0.3 and kps[p2, 2] > 0.3:
-                cv2.line(frame, (int(kps[p1, 1] * w), int(kps[p1, 0] * h)), (int(kps[p2, 1] * w), int(kps[p2, 0] * h)),
-                         color, 2)
+            if kps[p1, 2] > kp_conf and kps[p2, 2] > kp_conf:
+                cv2.line(frame, (int(kps[p1, 1] * w), int(kps[p1, 0] * h)),
+                         (int(kps[p2, 1] * w), int(kps[p2, 0] * h)), color, 1)
+        # Connect head to torso cleanly via neck line (nose -> shoulder midpoint)
+        # Eliminates face-slashing diagonal edges across cheeks and mouth, with single-shoulder fallback
+        sh5_ok = kps[5, 2] > kp_conf
+        sh6_ok = kps[6, 2] > kp_conf
+        if kps[0, 2] > kp_conf and (sh5_ok or sh6_ok):
+            if sh5_ok and sh6_ok:
+                mid_sh_x = int((kps[5, 1] + kps[6, 1]) * 0.5 * w)
+                mid_sh_y = int((kps[5, 0] + kps[6, 0]) * 0.5 * h)
+            elif sh5_ok:
+                mid_sh_x = int(kps[5, 1] * w)
+                mid_sh_y = int(kps[5, 0] * h)
+            else:
+                mid_sh_x = int(kps[6, 1] * w)
+                mid_sh_y = int(kps[6, 0] * h)
+            nose_x = int(kps[0, 1] * w)
+            nose_y = int(kps[0, 0] * h)
+            cv2.line(frame, (nose_x, nose_y), (mid_sh_x, mid_sh_y), color, 1)
 
     def label_person(self, frame, kps, p_id, label, score):
         h, w = frame.shape[:2]

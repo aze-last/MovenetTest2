@@ -238,6 +238,24 @@ class CentralInferenceManager:
         union = area_a + area_b - inter
         return inter / union if union > 0 else 0.0
 
+    @staticmethod
+    def _bbox_overlap(box_a, box_b):
+        """Returns (iou, ioa_min) of two (x1, y1, x2, y2) boxes."""
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0:
+            return 0.0, 0.0
+        area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+        area_b = max(1, (bx2 - bx1) * (by2 - by1))
+        union = area_a + area_b - inter
+        iou = inter / union if union > 0 else 0.0
+        ioa_min = inter / min(area_a, area_b)
+        return iou, ioa_min
+
     @classmethod
     def _contraband_for_render(cls, detections):
         """RC-2 render-only dedup: drop a coasting hysteresis ghost from the DRAW list
@@ -265,17 +283,46 @@ class CentralInferenceManager:
         return drawable
 
     def _draw_contraband_boxes(self, frame, detections):
-        """Single draw helper for contraband boxes (live + power-saving paths)."""
+        """Single draw helper for contraband boxes (live + power-saving paths).
+        Renders clean institutional bounding box with corner brackets and high-contrast pill badge."""
         import cv2
         for det in self._contraband_for_render(detections):
             name = det.get("name", "Unknown")
             track_id = det.get("track_id", -1)
             conf = float(det.get("confidence", 0.0))
             x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            label_text = f"ALERT: {name.upper()} {int(conf*100)}% (THR: ≥30%) ID:{track_id}" if conf > 0 else f"ALERT: {name.upper()} (ID: {track_id})"
-            cv2.putText(frame, label_text,
-                        (x1, max(0, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+            alert_color = (0, 0, 255)
+
+            # Professional CCTV frame with corner brackets
+            cv2.rectangle(frame, (x1, y1), (x2, y2), alert_color, 1)
+            c_len = min(12, max(4, (x2 - x1) // 4), max(4, (y2 - y1) // 4))
+            cv2.line(frame, (x1, y1), (x1 + c_len, y1), alert_color, 2)
+            cv2.line(frame, (x1, y1), (x1, y1 + c_len), alert_color, 2)
+            cv2.line(frame, (x2, y1), (x2 - c_len, y1), alert_color, 2)
+            cv2.line(frame, (x2, y1), (x2, y1 + c_len), alert_color, 2)
+            cv2.line(frame, (x1, y2), (x1 + c_len, y2), alert_color, 2)
+            cv2.line(frame, (x1, y2), (x1, y2 - c_len), alert_color, 2)
+            cv2.line(frame, (x2, y2), (x2 - c_len, y2), alert_color, 2)
+            cv2.line(frame, (x2, y2), (x2, y2 - c_len), alert_color, 2)
+
+            label_text = f"ALERT: {name.upper()} {int(conf*100)}% (THR: >=30%) ID:{track_id}" if conf > 0 else f"ALERT: {name.upper()} (ID: {track_id})"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.48
+            (tw, th), _ = cv2.getTextSize(label_text, font, font_scale, 1)
+            badge_h = th + 6
+            badge_w = tw + 8
+            if y1 - badge_h >= 0:
+                by1 = y1 - badge_h
+                by2 = y1
+            else:
+                by1 = y1
+                by2 = min(frame.shape[0], y1 + badge_h)
+            bx1 = max(0, x1)
+            bx2 = min(frame.shape[1], bx1 + badge_w)
+
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), alert_color, 1)
+            cv2.putText(frame, label_text, (bx1 + 4, by2 - 4), font, font_scale, (0, 80, 255), 1, cv2.LINE_AA)
 
     def _compute_is_alert(self, packet, p):
         """Raw per-frame alert state for a person: legacy behavior detection (matched by
@@ -295,7 +342,22 @@ class CentralInferenceManager:
 
         color = (0, 0, 255) if is_alert else (0, 255, 0)
         x1, y1, x2, y2 = bbox
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+        # Professional CCTV bounding box: 1px frame + corner brackets
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
+        c_len = min(16, max(6, (x2 - x1) // 5), max(6, (y2 - y1) // 5))
+        # Top-left
+        cv2.line(frame, (x1, y1), (x1 + c_len, y1), color, 2)
+        cv2.line(frame, (x1, y1), (x1, y1 + c_len), color, 2)
+        # Top-right
+        cv2.line(frame, (x2, y1), (x2 - c_len, y1), color, 2)
+        cv2.line(frame, (x2, y1), (x2, y1 + c_len), color, 2)
+        # Bottom-left
+        cv2.line(frame, (x1, y2), (x1 + c_len, y2), color, 2)
+        cv2.line(frame, (x1, y2), (x1, y2 - c_len), color, 2)
+        # Bottom-right
+        cv2.line(frame, (x2, y2), (x2 - c_len, y2), color, 2)
+        cv2.line(frame, (x2, y2), (x2, y2 - c_len), color, 2)
 
         id_text = f"ID {stable_id}"
         if is_alert and alert_types:
@@ -303,15 +365,24 @@ class CentralInferenceManager:
             if sorted_types:
                 id_text = f"ID {stable_id} | {' | '.join(sorted_types)}"
 
-        cv2.putText(
-            frame,
-            id_text,
-            (x1, max(0, y1 - 10)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            color,
-            2,
-        )
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.50
+        (tw, th), _ = cv2.getTextSize(id_text, font, font_scale, 1)
+        badge_h = th + 6
+        badge_w = tw + 8
+        if y1 - badge_h >= 0:
+            by1 = y1 - badge_h
+            by2 = y1
+        else:
+            by1 = y1
+            by2 = min(frame.shape[0], y1 + badge_h)
+        bx1 = max(0, x1)
+        bx2 = min(frame.shape[1], bx1 + badge_w)
+
+        cv2.rectangle(frame, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
+        cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 1)
+        text_color = (255, 255, 255) if not is_alert else (0, 100, 255)
+        cv2.putText(frame, id_text, (bx1 + 4, by2 - 4), font, font_scale, text_color, 1, cv2.LINE_AA)
 
         if get_concealment_config("enabled", True) and hand_observations:
             l_state = "Unknown"
@@ -339,16 +410,22 @@ class CentralInferenceManager:
 
             if has_known:
                 badge_text = f"L: {l_state} | R: {r_state}"
-                yellow = (0, 255, 255)
-                badge_y = y1 + 18 if y1 + 22 < y2 else max(15, y1 - 30)
+                (hw, hh), _ = cv2.getTextSize(badge_text, font, 0.45, 1)
+                hy1 = y2 - hh - 8 if y2 - hh - 8 > by2 else by2 + 2
+                hy2 = min(frame.shape[0], hy1 + hh + 6)
+                hx1 = max(0, x1)
+                hx2 = min(frame.shape[1], hx1 + hw + 8)
+                cv2.rectangle(frame, (hx1, hy1), (hx2, hy2), (20, 20, 20), -1)
+                cv2.rectangle(frame, (hx1, hy1), (hx2, hy2), (0, 220, 220), 1)
                 cv2.putText(
                     frame,
                     badge_text,
-                    (x1, badge_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    yellow,
-                    2,
+                    (hx1 + 4, hy2 - 4),
+                    font,
+                    0.45,
+                    (0, 255, 255),
+                    1,
+                    cv2.LINE_AA,
                 )
 
     def _render_person_boxes(
@@ -399,18 +476,35 @@ class CentralInferenceManager:
         cache = self.box_hysteresis.setdefault(cam_id, {})
         present_ids = set()
 
+        # Collect live persons with valid bboxes and keypoints
+        live_candidates = []
         for p in packet.tracked_persons:
             if p.keypoints is None:
                 continue
-            # Restore MoveNet skeletal lines on the final frame (fresh detections only)
-            if skeleton_fresh and hasattr(self.engine, 'draw_skeleton'):
-                self.engine.draw_skeleton(packet.frame, p.keypoints, p.stable_id)
-
             bbox = MotionOptimizedEngine.compute_bbox_from_keypoints(p.keypoints, packet.frame.shape)
             if not bbox:
                 continue
             p.bbox = bbox
+            live_candidates.append(p)
 
+        # Pairwise deduplication: suppress split detections of the same human body
+        deduped_live = []
+        for p in sorted(live_candidates, key=lambda x: getattr(x, "confidence", 0.5), reverse=True):
+            is_dup = False
+            for kept in deduped_live:
+                iou, ioa = self._bbox_overlap(p.bbox, kept.bbox)
+                if iou >= 0.35 or ioa >= 0.50:
+                    is_dup = True
+                    break
+            if not is_dup:
+                deduped_live.append(p)
+
+        for p in deduped_live:
+            # Restore MoveNet skeletal lines on the final frame (fresh detections only)
+            if skeleton_fresh and hasattr(self.engine, 'draw_skeleton'):
+                self.engine.draw_skeleton(packet.frame, p.keypoints, p.stable_id)
+
+            bbox = p.bbox
             raw_alert = self._compute_is_alert(packet, p)
             prev = cache.get(p.stable_id, {})
             if raw_alert:
@@ -448,7 +542,7 @@ class CentralInferenceManager:
         # this is render-only — packet.tracked_persons / behavior_evidence, which the
         # behavior, fusion and decision paths consume, never contained coasted
         # entries in the first place.
-        coast_thr = float(get_config("movenet", "coast_dedup_iou", 0.6))
+        coast_thr = float(get_config("movenet", "coast_dedup_iou", 0.35))
         live_boxes = [cache[sid]["bbox"] for sid in present_ids if cache.get(sid, {}).get("bbox")]
         for sid in list(cache.keys()):
             if sid in present_ids:
@@ -461,7 +555,9 @@ class CentralInferenceManager:
             entry["alert_hold"] = max(0, int(entry.get("alert_hold", 0)) - 1)
             entry["is_alert"] = entry["alert_hold"] > 0
             overlaps_live = any(
-                self._iou(entry["bbox"], lb) >= coast_thr for lb in live_boxes
+                iou >= coast_thr or ioa >= 0.40
+                for lb in live_boxes
+                for iou, ioa in [self._bbox_overlap(entry["bbox"], lb)]
             )
             if not overlaps_live:
                 self._draw_person_box(

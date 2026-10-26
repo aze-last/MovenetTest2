@@ -51,6 +51,7 @@ class IncidentRecorder:
         self.current_video_path = ""
         self.current_timestamp_start = ""
         self.confidence_scores = []
+        self._lock = threading.Lock()
 
         self._init_db()
         self._ensure_dir()
@@ -117,26 +118,28 @@ class IncidentRecorder:
             return
         self.trigger_recording(event_type, [], frame, incident_id, ai_results)
 
-    def handle_evidence_added(self, camera_id, incident_id, event_type, confidence_scores):
+    def handle_evidence_added(self, camera_id, incident_id, event_type, confidence_scores, severity=None, **kwargs):
         from monitor_app.utils import normalize_cam_id
         if normalize_cam_id(camera_id) != self.camera_id:
             return
-        if self.state == self.RECORDING and self.current_event_id == incident_id:
-            # Merge evidence name
-            if event_type not in self.current_event_type:
-                if self.current_event_type:
-                    self.current_event_type += f" + {event_type}"
-                else:
-                    self.current_event_type = event_type
-            # Append confidence scores
-            self.confidence_scores.extend(confidence_scores)
+        with self._lock:
+            if self.state == self.RECORDING and self.current_event_id == incident_id:
+                # Merge evidence name
+                if event_type not in self.current_event_type:
+                    if self.current_event_type:
+                        self.current_event_type += f" + {event_type}"
+                    else:
+                        self.current_event_type = event_type
+                # Append confidence scores
+                self.confidence_scores.extend(confidence_scores)
 
     def handle_incident_stop(self, camera_id, incident_id):
         from monitor_app.utils import normalize_cam_id
         if normalize_cam_id(camera_id) != self.camera_id:
             return
-        if self.state == self.RECORDING and self.current_event_id == incident_id:
-            self.stop_recording()
+        with self._lock:
+            if self.state == self.RECORDING and self.current_event_id == incident_id:
+                self.stop_recording()
 
     def process_frame(self, bgr_frame, ai_results):
         """
@@ -155,25 +158,26 @@ class IncidentRecorder:
             self.pre_roll_buffer.append(encoded.tobytes())
 
         # 3. STATE MACHINE
-        if self.state == self.RECORDING:
-            if self.video_writer:
-                self.video_writer.write(bgr_frame)
-                
-        elif self.state == self.COOLDOWN:
-            if time.time() >= self.cooldown_end_time:
-                self.state = self.IDLE
-                logger.info(f"Status -> IDLE", camera_id=self.camera_id)
+        with self._lock:
+            if self.state == self.RECORDING:
+                if self.video_writer:
+                    self.video_writer.write(bgr_frame)
+            elif self.state == self.COOLDOWN:
+                if time.time() >= self.cooldown_end_time:
+                    self.state = self.IDLE
+                    logger.info(f"Status -> IDLE", camera_id=self.camera_id)
 
     def trigger_recording(self, event_type, confidence_scores, current_frame, incident_id, ai_results=None):
         """Starts recording, called by event handler."""
-        if self.state in (self.IDLE, self.COOLDOWN):
-            self._start_recording(current_frame, event_type, confidence_scores, incident_id)
+        with self._lock:
+            if self.state in (self.IDLE, self.COOLDOWN):
+                self._start_recording(current_frame, event_type, confidence_scores, incident_id)
 
     def stop_recording(self):
         """Stops recording, called by event handler."""
-        if self.state == self.RECORDING:
-            self._stop_recording()
-
+        with self._lock:
+            if self.state == self.RECORDING:
+                self._stop_recording()
     def _start_recording(self, current_frame, event_type, confidence_scores, incident_id):
         now = datetime.now()
         date_str = now.strftime("%Y-%m-%d")
