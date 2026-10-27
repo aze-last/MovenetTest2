@@ -428,9 +428,10 @@ class MotionOptimizedEngine:
         ys = [kp[0] * h for kp in valid_kps]
         xs = [kp[1] * w for kp in valid_kps]
         
-        # Add a bit of padding
-        padding_y = h * 0.05
-        padding_x = w * 0.05
+        # Add a bit of padding (configurable, default 0.075 for clean framing and no pixel crowding)
+        pad_pct = float(get_config("movenet", "bbox_padding_pct", 0.075))
+        padding_y = h * pad_pct
+        padding_x = w * pad_pct
         
         x1 = max(0, int(min(xs) - padding_x))
         y1 = max(0, int(min(ys) - padding_y))
@@ -489,7 +490,11 @@ class MotionOptimizedEngine:
                     if has_hips:
                         hip_centroid = ((person[11, 1] + person[12, 1]) / 2, (person[11, 0] + person[12, 0]) / 2)
                     elif has_shoulders:
-                        hip_centroid = ((person[5, 1] + person[6, 1]) / 2, (person[5, 0] + person[6, 0]) / 2)
+                        sh_w = abs(person[5, 1] - person[6, 1])
+                        torso_offset_y = max(0.08, min(0.35, 1.35 * sh_w)) if sh_w > 0.02 else 0.18
+                        sh_x = (person[5, 1] + person[6, 1]) / 2
+                        sh_y = (person[5, 0] + person[6, 0]) / 2
+                        hip_centroid = (sh_x, min(1.0, sh_y + torso_offset_y))
                     else:
                         xs = [kp[1] for kp in valid_kps]
                         ys = [kp[0] for kp in valid_kps]
@@ -748,88 +753,92 @@ class MotionOptimizedEngine:
                 }
                 fallback_thr = getattr(self, "yolo_fallback_conf", 0.50)
 
-                for r in results:
-                    if r.boxes is None or len(r.boxes) == 0:
-                        continue
-                        
-                    # Update active track time to keep motion gate open if detections exist
+                current_det_keys = set()
+                yolo_hyst_ttl = int(get_config("yolo", "detection_hysteresis_frames", 5))
+
+                if results:
+                    for r in results:
+                        if r.boxes is None or len(r.boxes) == 0:
+                            continue
+
+                        for box in r.boxes:
+                            conf = float(box.conf[0])
+                            cls_id = int(box.cls[0])
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            track_id = int(box.id[0]) if box.id is not None else -1
+
+                            # Phase A1: per-detection track_id/conf/box trace
+                            if self.flicker_trace:
+                                print(f"[FLICKER-A1] cam={cam_id} fidx={res.get('frame_index')} "
+                                      f"cls={cls_id} track_id={track_id} id_is_none={box.id is None} "
+                                      f"conf={conf:.3f} box=({x1},{y1},{x2},{y2})", flush=True)
+
+                            if cls_id in CLASS_NAMES and conf > CONF_THRESHOLDS.get(cls_id, fallback_thr):
+                                # Generate unique key to prevent overwrite collisions.
+                                # Phase B2: tracked -> track_id; untracked -> quantized spatial grid
+                                # bucket (NOT raw x1,y1) so a stationary object's jitter maps to one
+                                # stable hysteresis key instead of a fresh key every frame.
+                                if track_id != -1:
+                                    cache_key = track_id
+                                    effective_track_id = track_id
+                                else:
+                                    grid_px = get_config("yolo", "untracked_grid_px", 96)
+                                    cache_key = self._untracked_cache_key(cls_id, x1, y1, x2, y2, grid_px)
+                                    effective_track_id = abs(hash(cache_key)) % 9000 + 1000
+                                current_det_keys.add(cache_key)
+                                
+                                # Update hysteresis cache
+                                if cam_id not in self.yolo_hysteresis:
+                                    self.yolo_hysteresis[cam_id] = {}
+                                
+                                self.yolo_hysteresis[cam_id][cache_key] = {
+                                    "conf": conf,
+                                    "box": [x1, y1, x2, y2],
+                                    "track_id": effective_track_id,
+                                    "cls_id": cls_id,
+                                    "ttl": yolo_hyst_ttl
+                                }
+
+                                detections_found.append({
+                                    "name": CLASS_NAMES[cls_id],
+                                    "conf": conf,
+                                    "box": [x1, y1, x2, y2],
+                                    "track_id": effective_track_id,
+                                    "source": "combined"
+                                })
+
+                # Apply hysteresis for missing detections unconditionally across every camera frame
+                if cam_id in self.yolo_hysteresis:
+                    for key in list(self.yolo_hysteresis[cam_id].keys()):
+                        if key not in current_det_keys:
+                            data = self.yolo_hysteresis[cam_id][key]
+                            data["ttl"] -= 1
+                            if data["ttl"] <= 0:
+                                del self.yolo_hysteresis[cam_id][key]
+                            else:
+                                detections_found.append({
+                                    "name": CLASS_NAMES[data["cls_id"]],
+                                    "conf": data["conf"],
+                                    "box": data["box"],
+                                    "track_id": data["track_id"],
+                                    "source": "combined_hysteresis"
+                                })
+
+                # Update active track time to keep motion gate open if detections exist (live or coasted)
+                if detections_found:
                     from monitor_app.central_inference import get_inference_manager
                     mgr = get_inference_manager()
                     if mgr:
                         mgr.update_active_track_time(cam_id)
 
-                    current_det_keys = set()
-                    for box in r.boxes:
-                        conf = float(box.conf[0])
-                        cls_id = int(box.cls[0])
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        track_id = int(box.id[0]) if box.id is not None else -1
-
-                        # Phase A1: per-detection track_id/conf/box trace
-                        if self.flicker_trace:
-                            print(f"[FLICKER-A1] cam={cam_id} fidx={res.get('frame_index')} "
-                                  f"cls={cls_id} track_id={track_id} id_is_none={box.id is None} "
-                                  f"conf={conf:.3f} box=({x1},{y1},{x2},{y2})", flush=True)
-
-                        if cls_id in CLASS_NAMES and conf > CONF_THRESHOLDS.get(cls_id, fallback_thr):
-                            # Generate unique key to prevent overwrite collisions.
-                            # Phase B2: tracked -> track_id; untracked -> quantized spatial grid
-                            # bucket (NOT raw x1,y1) so a stationary object's jitter maps to one
-                            # stable hysteresis key instead of a fresh key every frame.
-                            if track_id != -1:
-                                cache_key = track_id
-                                effective_track_id = track_id
-                            else:
-                                grid_px = get_config("yolo", "untracked_grid_px", 96)
-                                cache_key = self._untracked_cache_key(cls_id, x1, y1, x2, y2, grid_px)
-                                effective_track_id = abs(hash(cache_key)) % 9000 + 1000
-                            current_det_keys.add(cache_key)
-                            
-                            # Update hysteresis cache
-                            if cam_id not in self.yolo_hysteresis:
-                                self.yolo_hysteresis[cam_id] = {}
-                            
-                            self.yolo_hysteresis[cam_id][cache_key] = {
-                                "conf": conf,
-                                "box": [x1, y1, x2, y2],
-                                "track_id": effective_track_id,
-                                "cls_id": cls_id,
-                                "ttl": 5  # Persist for 5 frames
-                            }
-
-                            detections_found.append({
-                                "name": CLASS_NAMES[cls_id],
-                                "conf": conf,
-                                "box": [x1, y1, x2, y2],
-                                "track_id": effective_track_id,
-                                "source": "combined"
-                            })
-                            
-                    # Apply hysteresis for missing detections
-                    if cam_id in self.yolo_hysteresis:
-                        for key in list(self.yolo_hysteresis[cam_id].keys()):
-                            if key not in current_det_keys:
-                                data = self.yolo_hysteresis[cam_id][key]
-                                data["ttl"] -= 1
-                                if data["ttl"] <= 0:
-                                    del self.yolo_hysteresis[cam_id][key]
-                                else:
-                                    detections_found.append({
-                                        "name": CLASS_NAMES[data["cls_id"]],
-                                        "conf": data["conf"],
-                                        "box": data["box"],
-                                        "track_id": data["track_id"],
-                                        "source": "combined_hysteresis"
-                                    })
-
-                    # Phase A1: hysteresis-cache snapshot (which keys are live vs coasting)
-                    if self.flicker_trace:
-                        cache_keys = list(self.yolo_hysteresis.get(cam_id, {}).keys())
-                        sources = [d.get("source") for d in detections_found]
-                        print(f"[FLICKER-A1] cam={cam_id} fidx={res.get('frame_index')} "
-                              f"live_keys={sorted(str(k) for k in current_det_keys)} "
-                              f"cache_keys={sorted(str(k) for k in cache_keys)} "
-                              f"emitted_sources={sources}", flush=True)
+                # Phase A1: hysteresis-cache snapshot (which keys are live vs coasting)
+                if self.flicker_trace:
+                    cache_keys = list(self.yolo_hysteresis.get(cam_id, {}).keys())
+                    sources = [d.get("source") for d in detections_found]
+                    print(f"[FLICKER-A1] cam={cam_id} fidx={res.get('frame_index')} "
+                          f"live_keys={sorted(str(k) for k in current_det_keys)} "
+                          f"cache_keys={sorted(str(k) for k in cache_keys)} "
+                          f"emitted_sources={sources}", flush=True)
             except Exception as e:
                 CapstoneDebug.log(cam_id, f"Combined YOLO Error: {e}")
 
@@ -880,7 +889,8 @@ class MotionOptimizedEngine:
         if dt < 0.01: return "Normal", 0.0
 
         # Reset tracker if gap is too large to prevent velocity spikes from tracking gaps/reappearance
-        if dt > 0.15:
+        max_dt_reset = float(get_config("behavior", "max_dt_reset", 0.40))
+        if dt > max_dt_reset:
             tracker['prev_coords'] = coords
             tracker['prev_confs'] = confs
             tracker['smoothed_coords'] = coords.copy()
@@ -955,11 +965,11 @@ class MotionOptimizedEngine:
         kp_conf = get_config("movenet", "bbox_kp_conf", 0.10)
         for y, x, c in kps:
             if c > kp_conf:
-                cv2.circle(frame, (int(x * w), int(y * h)), 3, color, -1)
+                cv2.circle(frame, (int(x * w), int(y * h)), 4, color, -1, lineType=cv2.LINE_AA)
         for p1, p2 in self.EDGES:
             if kps[p1, 2] > kp_conf and kps[p2, 2] > kp_conf:
                 cv2.line(frame, (int(kps[p1, 1] * w), int(kps[p1, 0] * h)),
-                         (int(kps[p2, 1] * w), int(kps[p2, 0] * h)), color, 1)
+                         (int(kps[p2, 1] * w), int(kps[p2, 0] * h)), color, 2, lineType=cv2.LINE_AA)
         # Connect head to torso cleanly via neck line (nose -> shoulder midpoint)
         # Eliminates face-slashing diagonal edges across cheeks and mouth, with single-shoulder fallback
         sh5_ok = kps[5, 2] > kp_conf
@@ -976,13 +986,13 @@ class MotionOptimizedEngine:
                 mid_sh_y = int(kps[6, 0] * h)
             nose_x = int(kps[0, 1] * w)
             nose_y = int(kps[0, 0] * h)
-            cv2.line(frame, (nose_x, nose_y), (mid_sh_x, mid_sh_y), color, 1)
+            cv2.line(frame, (nose_x, nose_y), (mid_sh_x, mid_sh_y), color, 2, lineType=cv2.LINE_AA)
 
     def label_person(self, frame, kps, p_id, label, score):
         h, w = frame.shape[:2]
         x, y = int(kps[0, 1] * w), int(kps[0, 0] * h)
         color = (0, 0, 255) if "Aggressive" in label else (255, 255, 255)
-        cv2.putText(frame, f"P{p_id + 1}: {label}", (x, y - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        cv2.putText(frame, f"P{p_id + 1}: {label}", (x, y - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, lineType=cv2.LINE_AA)
 
     def get_stats(self):
         return self.stats

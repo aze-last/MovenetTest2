@@ -1,9 +1,9 @@
 # Core Computer Vision & AI
 --extra-index-url https://download.pytorch.org/whl/cu118
-opencv-python>=4.8.0
+opencv-python==4.13.0.92
 pillow>=10.0.0
 numpy==1.26.4
-ultralytics==8.4.26
+ultralytics==8.4.86
 
 # ONNX Runtime (MoveNet) - CPU Execution
 onnxruntime>=1.16.0

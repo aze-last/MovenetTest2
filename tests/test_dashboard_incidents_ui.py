@@ -92,3 +92,67 @@ def test_theme_icon_and_clean_metric_cards(tk_root):
 
     frame.destroy()
 
+
+
+def test_incident_threat_parsing_and_adversarial_layout(tk_root):
+    from monitor_app.incidents import parse_threat_telemetry, summarize_event_type_short, IncidentsScreen
+
+    # 1. Test telemetry parser against massive adversarial concatenated string
+    raw_telemetry = (
+        "Aggressive / Fighting (11%) + Aggressive / Fighting (12%) + Aggressive / Fighting (14%) + "
+        + " + ".join([f"Cellphone ({30 + (i % 60)}% >= 30%)" for i in range(100)])
+        + " + Knife (79%) + Knife (82%) + Fast Movement (6%)"
+    )
+    threats = parse_threat_telemetry(raw_telemetry)
+    assert len(threats) == 4
+
+    names = {t["name"]: t for t in threats}
+    assert "Cellphone" in names
+    assert names["Cellphone"]["category"] == "warning"
+    assert names["Cellphone"]["tag"] == "CONTRABAND"
+    assert names["Cellphone"]["count"] == 100
+    assert names["Cellphone"]["max_conf"] == 89
+
+    assert "Knife" in names
+    assert names["Knife"]["category"] == "danger"
+    assert names["Knife"]["tag"] == "WEAPON"
+    assert names["Knife"]["max_conf"] == 82
+
+    assert "Aggressive / Fighting" in names
+    assert names["Aggressive / Fighting"]["category"] == "danger"
+    assert names["Aggressive / Fighting"]["tag"] == "VIOLENCE"
+    assert names["Aggressive / Fighting"]["max_conf"] == 14
+
+    assert "Fast Movement" in names
+    assert names["Fast Movement"]["category"] == "accent"
+    assert names["Fast Movement"]["tag"] == "BEHAVIOR"
+
+    summary_short = summarize_event_type_short(raw_telemetry)
+    assert "Cellphone" in summary_short
+    assert "Knife" in summary_short
+
+    # 2. Test IncidentsScreen loading with adversarial data
+    frame = ctk.CTkFrame(tk_root)
+    frame.pack()
+    screen = IncidentsScreen(frame)
+    screen.review_tab.load_incident({
+        "event_id": "TEST_ADVERSARIAL_101",
+        "camera_id": "2",
+        "timestamp_start": "2026-10-27T10:15:30",
+        "event_type": raw_telemetry,
+        "review_status": "PENDING"
+    })
+
+    # Assert UI rendered badges properly without blowing up
+    badges = screen.review_tab.threat_badges_frame.winfo_children()
+    assert len(badges) == 4
+    assert screen.review_tab._raw_stream_visible is False
+
+    # Toggle raw stream
+    screen.review_tab._toggle_raw_stream()
+    assert screen.review_tab._raw_stream_visible is True
+    screen.review_tab._toggle_raw_stream()
+    assert screen.review_tab._raw_stream_visible is False
+
+    screen.stop_monitoring()
+    frame.destroy()

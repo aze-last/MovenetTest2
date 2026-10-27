@@ -215,8 +215,8 @@ class OfflineInferenceManager:
                         
                         is_alert = any(ev.stable_id == p.stable_id for ev in packet.behavior_evidence)
                         color = (0, 0, 255) if is_alert else (0, 255, 0)
-                        cv2.rectangle(packet.frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
-                        cv2.putText(packet.frame, f"ID {p.stable_id}", (bbox[0], max(0, bbox[1] - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                        cv2.rectangle(packet.frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2, lineType=cv2.LINE_AA)
+                        cv2.putText(packet.frame, f"ID {p.stable_id}", (bbox[0], max(0, bbox[1] - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, lineType=cv2.LINE_AA)
 
                 self.all_detections.append({
                     "frame_number": current_frame,
@@ -236,9 +236,9 @@ class OfflineInferenceManager:
                 x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
                 
                 label_text = f"ALERT: {name.upper()} (ID: {track_id})"
-                cv2.rectangle(packet.frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                cv2.rectangle(packet.frame, (x1, y1), (x2, y2), (0, 0, 255), 3, lineType=cv2.LINE_AA)
                 cv2.putText(packet.frame, label_text, (x1, max(0, y1 - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, lineType=cv2.LINE_AA)
 
             # Add YOLO Contraband
             for c in packet.detections.get("contraband", []):

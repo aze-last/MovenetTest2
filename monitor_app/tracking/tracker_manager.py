@@ -1,8 +1,41 @@
+import numpy as np
 import torch
 from ultralytics.utils import IterableSimpleNamespace
 from ultralytics.trackers.byte_tracker import BYTETracker
 from monitor_app.config import get_config
 from monitor_app.events import get_event_bus, TRACK_CREATED, TRACK_UPDATED, TRACK_LOST, TRACK_RECOVERED, TRACK_TERMINATED
+
+
+class DetectionsAdapter:
+    """
+    Adapter satisfying Ultralytics BYTETracker input protocol.
+    Converts [x1, y1, x2, y2] input into center-based [cx, cy, w, h] format
+    expected by parse_bboxes().
+    """
+    def __init__(self, xyxy, conf, cls):
+        xyxy = np.asarray(xyxy, dtype=np.float32).reshape(-1, 4)
+        self.conf = np.asarray(conf, dtype=np.float32)
+        self.cls = np.asarray(cls, dtype=np.float32)
+        
+        # Convert xyxy [x1, y1, x2, y2] to center-based xywh [cx, cy, w, h]
+        if len(xyxy) > 0:
+            w = xyxy[:, 2] - xyxy[:, 0]
+            h = xyxy[:, 3] - xyxy[:, 1]
+            cx = xyxy[:, 0] + w / 2.0
+            cy = xyxy[:, 1] + h / 2.0
+            self.xywh = np.stack([cx, cy, w, h], axis=-1)
+        else:
+            self.xywh = np.empty((0, 4), dtype=np.float32)
+
+    def __len__(self):
+        return len(self.conf)
+
+    def __getitem__(self, mask):
+        res = DetectionsAdapter(np.empty((0, 4)), [], [])
+        res.xywh = self.xywh[mask]
+        res.conf = self.conf[mask]
+        res.cls = self.cls[mask]
+        return res
 
 class TrackerManager:
     def __init__(self, cam_id):
@@ -77,21 +110,29 @@ class TrackerManager:
 
         # Process Human Tracks
         if human_boxes:
-            hb_tensor = torch.tensor(human_boxes, dtype=torch.float32)
-            human_tracks = self.human_tracker.update(hb_tensor, frame)
+            boxes_arr = np.asarray(human_boxes, dtype=np.float32)
+            xyxy = boxes_arr[:, :4]
+            conf = boxes_arr[:, 4] if boxes_arr.shape[1] > 4 else np.ones(len(boxes_arr), dtype=np.float32)
+            cls = boxes_arr[:, 5] if boxes_arr.shape[1] > 5 else np.zeros(len(boxes_arr), dtype=np.float32)
+            det = DetectionsAdapter(xyxy, conf, cls)
+            human_tracks = self.human_tracker.update(det, frame)
         else:
-            # Step tracker with empty tensor to decay lost tracks
-            self.human_tracker.update(torch.empty((0, 6)), frame)
+            # Step tracker with empty adapter to decay lost tracks
+            human_tracks = self.human_tracker.update(DetectionsAdapter([], [], []), frame)
             
         # Process Object Tracks
         if self.object_tracking_enabled and object_boxes:
-            ob_tensor = torch.tensor(object_boxes, dtype=torch.float32)
-            object_tracks = self.object_tracker.update(ob_tensor, frame)
+            boxes_arr = np.asarray(object_boxes, dtype=np.float32)
+            xyxy = boxes_arr[:, :4]
+            conf = boxes_arr[:, 4] if boxes_arr.shape[1] > 4 else np.ones(len(boxes_arr), dtype=np.float32)
+            cls = boxes_arr[:, 5] if boxes_arr.shape[1] > 5 else np.ones(len(boxes_arr), dtype=np.float32)
+            det = DetectionsAdapter(xyxy, conf, cls)
+            object_tracks = self.object_tracker.update(det, frame)
         elif self.object_tracking_enabled:
-            self.object_tracker.update(torch.empty((0, 6)), frame)
+            object_tracks = self.object_tracker.update(DetectionsAdapter([], [], []), frame)
 
         # Emit events
         self.active_human_ids = self._detect_state_changes(human_tracks, self.active_human_ids, "human")
         self.active_object_ids = self._detect_state_changes(object_tracks, self.active_object_ids, "object")
 
-        return human_tracks, object_tracks
+        return list(human_tracks), list(object_tracks)

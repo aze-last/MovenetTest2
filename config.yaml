@@ -21,6 +21,8 @@ camera_reconnect:
   factor: 2.0
   initial_backoff: 1.0
   max_backoff: 60.0
+behavior:
+  max_dt_reset: 0.40
 cloud_verifier:
   api_key: ''
   api_key_env: XKIRO_API_KEY
@@ -72,6 +74,15 @@ health_monitor:
   check_interval: 10.0
 incident_merging:
   merge_window: 10.0
+face_recognition:
+  cosine_threshold: 0.363
+  enabled: false
+  k_confirmations: 3
+  min_face_size_px: 50
+  n_window: 5
+fusion:
+  camera_zones: {}
+  zone_dedup_window_s: 7.0
 logging:
   console: true
   file: true
@@ -86,6 +97,7 @@ motion_gate:
   motion_gate_yolo_enabled: false
 movenet:
   bbox_kp_conf: 0.1
+  bbox_padding_pct: 0.075
   coast_dedup_iou: 0.35
   detection_hysteresis_frames: 8
   ghost_kp_conf: 0.12
@@ -118,6 +130,7 @@ update:
   manifest_url: ''
   max_installer_bytes: 134217728
 yolo:
+  detection_hysteresis_frames: 5
   hysteresis_dedup_iou: 0.5
   inference_imgsz: 960
   model_path: best.engine

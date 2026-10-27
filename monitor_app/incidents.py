@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import tkinter as tk
 from datetime import datetime
@@ -26,7 +27,98 @@ PALETTE = {
     "success": ("#16a34a", "#42c08d"),
     "warning": ("#d97706", "#d7a75a"),
     "danger": ("#dc2626", "#d86161"),
+    "threat_danger_bg": ("#fee2e2", "#2d1517"),
+    "threat_warning_bg": ("#fef3c7", "#2e2111"),
+    "threat_accent_bg": ("#e0e7ff", "#131d33"),
+    "threat_neutral_bg": ("#f1f5f9", "#1e293b"),
 }
+
+
+def parse_threat_telemetry(raw_type: str) -> list:
+    """
+    Parses complex, concatenated event telemetry strings (including multi-frame
+    detections and confidence percentages) into deduplicated, structured records
+    with category classifications, peak confidences, and detection counts.
+    """
+    if not raw_type or not str(raw_type).strip():
+        return []
+
+    tokens = [t.strip() for t in re.split(r'[\+\n,]+', str(raw_type)) if t.strip()]
+    events = {}
+    for tok in tokens:
+        m = re.match(r'^(.*?)(?:\s*\(\s*(\d+)%.*?\))?$', tok)
+        if m:
+            name = m.group(1).strip()
+            conf_str = m.group(2)
+            conf = int(conf_str) if conf_str else None
+        else:
+            name = tok
+            conf = None
+
+        clean_name = " ".join(name.split())
+        if not clean_name:
+            continue
+
+        if clean_name.lower() in ("cellphone", "knife", "alert", "gun", "phone"):
+            clean_name = clean_name.capitalize()
+
+        if clean_name not in events:
+            events[clean_name] = {"count": 0, "max_conf": None}
+        events[clean_name]["count"] += 1
+        if conf is not None:
+            if events[clean_name]["max_conf"] is None or conf > events[clean_name]["max_conf"]:
+                events[clean_name]["max_conf"] = conf
+
+    def _get_category_info(name):
+        n = name.lower()
+        if any(w in n for w in ["knife", "gun", "weapon"]):
+            return "danger", "WEAPON"
+        elif any(w in n for w in ["fight", "aggressive", "assault", "violence", "brawl"]):
+            return "danger", "VIOLENCE"
+        elif any(w in n for w in ["cellphone", "phone", "contraband", "cigarette", "lighter"]):
+            return "warning", "CONTRABAND"
+        elif any(w in n for w in ["movement", "motion", "running", "fall", "loiter"]):
+            return "accent", "BEHAVIOR"
+        return "neutral", "ALERT"
+
+    threats = []
+    for name, data in sorted(events.items(), key=lambda x: (x[1]["max_conf"] or 0, x[1]["count"]), reverse=True):
+        cat, tag = _get_category_info(name)
+        count = data["count"]
+        max_c = data["max_conf"]
+        detail_parts = []
+        if max_c is not None:
+            detail_parts.append(f"Peak: {max_c}%")
+        if count > 1:
+            detail_parts.append(f"{count} frames")
+        detail = " | ".join(detail_parts) if detail_parts else "Detected"
+        threats.append({
+            "name": name,
+            "category": cat,
+            "tag": tag,
+            "count": count,
+            "max_conf": max_c,
+            "detail": detail,
+        })
+    return threats
+
+
+def summarize_event_type_short(raw_type: str, max_items: int = 3) -> str:
+    """Returns a concise 1-line string summarizing detected threats for tables and overviews."""
+    threats = parse_threat_telemetry(raw_type)
+    if not threats:
+        return raw_type or "Unknown"
+    parts = []
+    for t in threats[:max_items]:
+        if t["max_conf"] is not None:
+            parts.append(f"{t['name']} ({t['max_conf']}%)")
+        elif t["count"] > 1:
+            parts.append(f"{t['name']} ({t['count']}x)")
+        else:
+            parts.append(t["name"])
+    if len(threats) > max_items:
+        parts.append(f"+{len(threats) - max_items} more")
+    return ", ".join(parts)
 
 
 def ensure_incidents_schema(db_path):
@@ -314,9 +406,10 @@ class IncidentReviewDetail(ctk.CTkFrame):
             "reviewed_by": tk.StringVar(value="-"),
             "retention": tk.StringVar(value="-"),
         }
+        self._raw_stream_visible = False
 
-        self.grid_columnconfigure(0, weight=8, uniform="incidents_cols")
-        self.grid_columnconfigure(1, weight=3, uniform="incidents_cols")
+        self.grid_columnconfigure(0, weight=13, uniform="incidents_cols")
+        self.grid_columnconfigure(1, weight=7, uniform="incidents_cols")
         self.grid_rowconfigure(0, weight=1)
 
         self.create_widgets()
@@ -455,59 +548,88 @@ class IncidentReviewDetail(ctk.CTkFrame):
         )
         self.details_card.grid(row=0, column=0, sticky="nsew")
 
-        header = ctk.CTkFrame(self.details_card, fg_color="transparent")
-        header.pack(fill="x", padx=18, pady=(18, 14))
+        # 1. Header Card (Title, Status Chip, Record ID)
+        header_card = ctk.CTkFrame(
+            self.details_card,
+            fg_color=PALETTE["card"],
+            corner_radius=14,
+            border_width=1,
+            border_color=PALETTE["border"],
+        )
+        header_card.pack(fill="x", padx=16, pady=(16, 12))
+
+        header_top = ctk.CTkFrame(header_card, fg_color="transparent")
+        header_top.pack(fill="x", padx=16, pady=(14, 6))
 
         ctk.CTkLabel(
-            header,
+            header_top,
             text="Incident Details",
-            font=("Bahnschrift SemiBold", 21),
+            font=("Bahnschrift SemiBold", 19),
             text_color=PALETTE["text"],
             anchor="w",
         ).pack(side="left")
 
         self.status_chip = ctk.CTkLabel(
-            header,
+            header_top,
             text="PENDING",
-            font=("Segoe UI Semibold", 11),
+            font=("Segoe UI Bold", 10),
             text_color=PALETTE["accent"],
             fg_color=PALETTE["card_soft"],
-            corner_radius=999,
-            padx=14,
-            pady=7,
+            corner_radius=8,
+            padx=12,
+            pady=5,
         )
         self.status_chip.pack(side="right")
 
-        rows = ctk.CTkFrame(self.details_card, fg_color="transparent")
-        rows.pack(fill="x", padx=18, pady=(0, 12))
-        rows.grid_columnconfigure((0, 1), weight=1)
+        id_bar = ctk.CTkFrame(header_card, fg_color="transparent")
+        id_bar.pack(fill="x", padx=16, pady=(0, 14))
 
-        field_layout = [
-            ("Incident ID", "id", 0, 0),
-            ("Camera", "camera", 0, 1),
-            ("Timestamp", "time", 1, 0),
-            ("Detected", "type", 1, 1),
-            ("Reviewed By", "reviewed_by", 2, 0),
-            ("Retention", "retention", 2, 1),
+        ctk.CTkLabel(
+            id_bar,
+            text="RECORD ID:",
+            font=("Segoe UI", 9, "bold"),
+            text_color=PALETTE["muted"],
+            anchor="w",
+        ).pack(side="left", padx=(0, 6))
+
+        self.id_label = ctk.CTkLabel(
+            id_bar,
+            textvariable=self.detail_vars["id"],
+            font=("Consolas", 11, "bold"),
+            text_color=PALETTE["text"],
+            anchor="w",
+        )
+        self.id_label.pack(side="left")
+
+        # 2. Metadata Grid (2x2 symmetrical key-value tiles)
+        meta_grid = ctk.CTkFrame(self.details_card, fg_color="transparent")
+        meta_grid.pack(fill="x", padx=16, pady=(0, 12))
+        meta_grid.grid_columnconfigure((0, 1), weight=1)
+
+        meta_layout = [
+            ("CAMERA FEED", "camera", 0, 0),
+            ("TIMESTAMP", "time", 0, 1),
+            ("AUDIT OFFICER", "reviewed_by", 1, 0),
+            ("RETENTION", "retention", 1, 1),
         ]
 
-        for label, key, row, column in field_layout:
+        for label, key, row, col in meta_layout:
             tile = ctk.CTkFrame(
-                rows,
+                meta_grid,
                 fg_color=PALETTE["card"],
-                corner_radius=16,
+                corner_radius=12,
                 border_width=1,
                 border_color=PALETTE["border"],
             )
-            tile.grid(row=row, column=column, sticky="ew", padx=5, pady=5)
+            tile.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
 
             ctk.CTkLabel(
                 tile,
                 text=label,
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 9, "bold"),
                 text_color=PALETTE["muted"],
                 anchor="w",
-            ).pack(anchor="w", padx=12, pady=(9, 2))
+            ).pack(anchor="w", padx=12, pady=(8, 2))
 
             ctk.CTkLabel(
                 tile,
@@ -515,84 +637,168 @@ class IncidentReviewDetail(ctk.CTkFrame):
                 font=("Segoe UI Semibold", 12),
                 text_color=PALETTE["text"],
                 anchor="w",
-                justify="left",
-                wraplength=120,
-            ).pack(anchor="w", fill="x", padx=12, pady=(0, 9))
+            ).pack(anchor="w", fill="x", padx=12, pady=(0, 8))
 
-        validation_wrap = ctk.CTkFrame(
+        # 3. Classified Threats & Evidence
+        self.threat_panel = ctk.CTkFrame(
             self.details_card,
-            fg_color=PALETTE["card_soft"],
-            corner_radius=18,
+            fg_color=PALETTE["card"],
+            corner_radius=14,
             border_width=1,
             border_color=PALETTE["border"],
         )
-        validation_wrap.pack(fill="x", padx=18, pady=(6, 18))
+        self.threat_panel.pack(fill="x", padx=16, pady=(0, 12))
+
+        threat_header = ctk.CTkFrame(self.threat_panel, fg_color="transparent")
+        threat_header.pack(fill="x", padx=14, pady=(12, 6))
 
         ctk.CTkLabel(
-            validation_wrap,
-            text="Decision & Notes",
-            font=("Segoe UI Semibold", 12),
+            threat_header,
+            text="CLASSIFIED THREATS & EVIDENCE",
+            font=("Segoe UI", 9, "bold"),
             text_color=PALETTE["muted"],
             anchor="w",
-        ).pack(anchor="w", padx=14, pady=(12, 8))
+        ).pack(side="left")
+
+        self.threat_count_chip = ctk.CTkLabel(
+            threat_header,
+            text="0 items",
+            font=("Segoe UI", 9, "bold"),
+            text_color=PALETTE["muted"],
+            fg_color=PALETTE["card_soft"],
+            corner_radius=6,
+            padx=8,
+            pady=2,
+        )
+        self.threat_count_chip.pack(side="right")
+
+        self.threat_badges_frame = ctk.CTkFrame(self.threat_panel, fg_color="transparent")
+        self.threat_badges_frame.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.empty_threat_label = ctk.CTkLabel(
+            self.threat_badges_frame,
+            text="No threat telemetry recorded.",
+            font=("Segoe UI", 11),
+            text_color=PALETTE["subtle"],
+            anchor="w",
+        )
+        self.empty_threat_label.pack(anchor="w", pady=4)
+
+        # Raw Stream Toggle & Textbox (Bounded Collapsible)
+        self.raw_stream_container = ctk.CTkFrame(self.threat_panel, fg_color="transparent")
+        self.raw_stream_container.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.btn_toggle_raw = ctk.CTkButton(
+            self.raw_stream_container,
+            text="▸ View Raw Stream",
+            font=("Segoe UI", 10),
+            fg_color="transparent",
+            hover_color=PALETTE["card_soft"],
+            text_color=PALETTE["muted"],
+            height=24,
+            anchor="w",
+            command=self._toggle_raw_stream,
+        )
+        self.btn_toggle_raw.pack(anchor="w")
+
+        self.raw_stream_box = ctk.CTkTextbox(
+            self.raw_stream_container,
+            height=60,
+            font=("Consolas", 10),
+            fg_color=PALETTE["panel"],
+            border_width=1,
+            border_color=PALETTE["border"],
+            text_color=PALETTE["muted"],
+            wrap="word",
+        )
+
+        # 4. Operator Audit & Notes Section
+        validation_wrap = ctk.CTkFrame(
+            self.details_card,
+            fg_color=PALETTE["card_soft"],
+            corner_radius=14,
+            border_width=1,
+            border_color=PALETTE["border"],
+        )
+        validation_wrap.pack(fill="x", padx=16, pady=(0, 16))
+
+        val_head = ctk.CTkFrame(validation_wrap, fg_color="transparent")
+        val_head.pack(fill="x", padx=14, pady=(12, 6))
+
+        ctk.CTkLabel(
+            val_head,
+            text="OPERATOR AUDIT & NOTES",
+            font=("Segoe UI", 9, "bold"),
+            text_color=PALETTE["muted"],
+            anchor="w",
+        ).pack(side="left")
 
         self.comment_box = ctk.CTkTextbox(
             validation_wrap,
-            height=58,
+            height=62,
             font=("Segoe UI", 12),
             fg_color=PALETTE["card"],
             border_width=1,
             border_color=PALETTE["border"],
             text_color=PALETTE["text"],
+            corner_radius=10,
         )
-        self.comment_box.pack(fill="x", padx=14, pady=(0, 12))
+        self.comment_box.pack(fill="x", padx=14, pady=(0, 10))
 
         actions = ctk.CTkFrame(validation_wrap, fg_color="transparent")
         actions.pack(fill="x", padx=14, pady=(0, 10))
         actions.grid_columnconfigure((0, 1), weight=1)
 
-        primary_buttons = [
-            ("Confirm Incident", "CONFIRMED", PALETTE["danger"], "#b94f4f", 0),
-            ("False Alarm", "FALSE ALARM", PALETTE["success"], "#32956b", 1),
-        ]
+        ctk.CTkButton(
+            actions,
+            text="Confirm Incident",
+            height=40,
+            corner_radius=10,
+            fg_color=PALETTE["danger"],
+            hover_color="#b91c1c",
+            text_color=("#ffffff", "#ffffff"),
+            font=("Segoe UI Semibold", 12),
+            command=lambda: self.update_status("CONFIRMED"),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
 
-        for text, status, color, hover, column in primary_buttons:
-            ctk.CTkButton(
-                actions,
-                text=text,
-                height=42,
-                corner_radius=12,
-                fg_color=color,
-                hover_color=hover,
-                text_color=PALETTE["text"],
-                font=("Segoe UI Semibold", 12),
-                command=lambda state=status: self.update_status(state),
-            ).grid(row=0, column=column, sticky="ew", padx=(0, 6) if column == 0 else (6, 0), pady=(0, 10))
+        ctk.CTkButton(
+            actions,
+            text="False Alarm",
+            height=40,
+            corner_radius=10,
+            fg_color=PALETTE["success"],
+            hover_color="#15803d",
+            text_color=("#ffffff", "#ffffff"),
+            font=("Segoe UI Semibold", 12),
+            command=lambda: self.update_status("FALSE ALARM"),
+        ).grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
 
         ctk.CTkButton(
             actions,
             text="Mark for Review",
-            height=38,
-            corner_radius=12,
+            height=36,
+            corner_radius=10,
             fg_color=PALETTE["accent"],
             hover_color=PALETTE["accent_hover"],
             text_color=PALETTE["text"],
-            font=("Segoe UI Semibold", 12),
+            font=("Segoe UI Semibold", 11),
             command=lambda: self.update_status("NEEDS REVIEW"),
-        ).grid(row=1, column=0, columnspan=2, sticky="ew")
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 4))
 
         self.btn_extract = ctk.CTkButton(
             actions,
-            text="Extract to Dataset",
-            height=38,
-            corner_radius=12,
-            fg_color=PALETTE["warning"],
-            hover_color="#b88f4b",
+            text="Extract Dataset",
+            height=36,
+            corner_radius=10,
+            fg_color=PALETTE["card"],
+            border_width=1,
+            border_color=PALETTE["border"],
+            hover_color=PALETTE["panel_alt"],
             text_color=PALETTE["text"],
-            font=("Segoe UI Semibold", 12),
+            font=("Segoe UI Semibold", 11),
             command=self.extract_to_dataset,
         )
-        self.btn_extract.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.btn_extract.grid(row=1, column=1, sticky="ew", padx=(4, 0))
 
         self.feedback_label = ctk.CTkLabel(
             validation_wrap,
@@ -600,17 +806,114 @@ class IncidentReviewDetail(ctk.CTkFrame):
             font=("Segoe UI", 11),
             text_color=PALETTE["subtle"],
             justify="left",
-            wraplength=280,
+            wraplength=340,
             anchor="w",
         )
-        self.feedback_label.pack(fill="x", padx=14, pady=(0, 12))
+        self.feedback_label.pack(fill="x", padx=14, pady=(8, 12))
+
+    def _toggle_raw_stream(self):
+        if self._raw_stream_visible:
+            self.raw_stream_box.pack_forget()
+            self.btn_toggle_raw.configure(text="▸ View Raw Stream")
+            self._raw_stream_visible = False
+        else:
+            self.raw_stream_box.pack(fill="x", pady=(4, 0))
+            self.btn_toggle_raw.configure(text="▾ Hide Raw Stream")
+            self._raw_stream_visible = True
+
+    def _update_threat_badges(self, parsed_threats, raw_type):
+        for child in self.threat_badges_frame.winfo_children():
+            child.destroy()
+
+        self.raw_stream_box.delete("1.0", tk.END)
+        self.raw_stream_box.insert("1.0", raw_type or "No raw telemetry.")
+
+        if not parsed_threats:
+            ctk.CTkLabel(
+                self.threat_badges_frame,
+                text="No specific threat classification.",
+                font=("Segoe UI", 11),
+                text_color=PALETTE["subtle"],
+                anchor="w",
+            ).pack(anchor="w", pady=4)
+            self.threat_count_chip.configure(text="0 items", text_color=PALETTE["muted"])
+            return
+
+        total_detections = sum(t["count"] for t in parsed_threats)
+        self.threat_count_chip.configure(
+            text=f"{len(parsed_threats)} types | {total_detections} hits",
+            text_color=PALETTE["accent"],
+        )
+
+        cat_colors = {
+            "danger": (PALETTE["danger"], PALETTE["threat_danger_bg"]),
+            "warning": (PALETTE["warning"], PALETTE["threat_warning_bg"]),
+            "accent": (PALETTE["accent"], PALETTE["threat_accent_bg"]),
+            "neutral": (PALETTE["muted"], PALETTE["threat_neutral_bg"]),
+        }
+
+        for threat in parsed_threats:
+            fg_tag, bg_badge = cat_colors.get(threat["category"], cat_colors["neutral"])
+
+            badge = ctk.CTkFrame(
+                self.threat_badges_frame,
+                fg_color=bg_badge,
+                corner_radius=10,
+                border_width=1,
+                border_color=PALETTE["border"],
+            )
+            badge.pack(fill="x", pady=3)
+
+            left_side = ctk.CTkFrame(badge, fg_color="transparent")
+            left_side.pack(side="left", padx=10, pady=6)
+
+            tag_lbl = ctk.CTkLabel(
+                left_side,
+                text=threat["tag"],
+                font=("Segoe UI", 9, "bold"),
+                text_color=fg_tag,
+                fg_color=PALETTE["card"],
+                corner_radius=4,
+                padx=6,
+                pady=1,
+            )
+            tag_lbl.pack(side="left", padx=(0, 8))
+
+            name_lbl = ctk.CTkLabel(
+                left_side,
+                text=threat["name"],
+                font=("Segoe UI Semibold", 12),
+                text_color=PALETTE["text"],
+                anchor="w",
+            )
+            name_lbl.pack(side="left")
+
+            right_side = ctk.CTkFrame(badge, fg_color="transparent")
+            right_side.pack(side="right", padx=10, pady=6)
+
+            det_lbl = ctk.CTkLabel(
+                right_side,
+                text=threat["detail"],
+                font=("Segoe UI", 11),
+                text_color=PALETTE["muted"],
+                anchor="e",
+            )
+            det_lbl.pack(side="right")
 
     def load_incident(self, data):
         self.current_incident = data
         self.detail_vars["id"].set(data.get("event_id", "-"))
         self.detail_vars["camera"].set(f"Cam {data.get('camera_id', '-')}")
         self.detail_vars["time"].set(self._format_timestamp(data.get("timestamp_start", "")))
-        self.detail_vars["type"].set(data.get("event_type", "Unknown"))
+
+        raw_type = data.get("event_type", "")
+        parsed_threats = parse_threat_telemetry(raw_type)
+        if parsed_threats:
+            short_summary = ", ".join([t["name"] for t in parsed_threats[:3]])
+            self.detail_vars["type"].set(short_summary)
+        else:
+            self.detail_vars["type"].set(raw_type or "Unknown")
+
         self.detail_vars["reviewed_by"].set(data.get("reviewed_by") or "Unassigned")
 
         retention = data.get("retention_days")
@@ -618,6 +921,8 @@ class IncidentReviewDetail(ctk.CTkFrame):
 
         status_text, status_color = _status_style(data.get("review_status"))
         self.status_chip.configure(text=status_text, text_color=status_color)
+
+        self._update_threat_badges(parsed_threats, raw_type)
 
         self.comment_box.delete("1.0", tk.END)
         self.comment_box.insert("1.0", data.get("comments") or "")
@@ -840,12 +1145,15 @@ class IncidentReviewDetail(ctk.CTkFrame):
             messagebox.showerror("Error", "Video file not found.")
             return
 
-        event_type = self.current_incident.get("event_type", "unknown").replace(" ", "_")
+        raw_event = self.current_incident.get("event_type", "unknown")
+        parsed = parse_threat_telemetry(raw_event)
+        primary_slug = parsed[0]["name"].replace(" ", "_") if parsed else "incident"
+        safe_slug = re.sub(r'[^\w\-_\.]', '_', primary_slug).strip('_')[:40] or "incident"
         event_id = self.current_incident.get("event_id", "incident")
 
         # Create target directories
         dataset_base = os.path.join(os.path.dirname(self.db_path), "DatasetRecordings")
-        target_dir = os.path.join(dataset_base, event_type)
+        target_dir = os.path.join(dataset_base, safe_slug)
         os.makedirs(target_dir, exist_ok=True)
 
         # Copy video
@@ -871,7 +1179,7 @@ class IncidentReviewDetail(ctk.CTkFrame):
         except Exception as e:
             print(f"Frame extraction failed: {e}")
             
-        messagebox.showinfo("Extraction Complete", f"Saved to DatasetRecordings/{event_type}\n- {event_id}.mp4\n- {event_id}_frame.jpg")
+        messagebox.showinfo("Extraction Complete", f"Saved to DatasetRecordings/{safe_slug}\n- {event_id}.mp4\n- {event_id}_frame.jpg")
 
 
 class IncidentLogTable(ctk.CTkFrame):
@@ -1088,6 +1396,7 @@ class IncidentLogTable(ctk.CTkFrame):
             for row in self.rows:
                 display_time = self._format_row_time(row["timestamp_start"])
                 status_text, _ = _status_style(row["review_status"])
+                display_type = summarize_event_type_short(row["event_type"])
                 self.tree.insert(
                     "",
                     tk.END,
@@ -1096,7 +1405,7 @@ class IncidentLogTable(ctk.CTkFrame):
                         row["event_id"],
                         display_time,
                         f"Cam {row['camera_id']}",
-                        row["event_type"],
+                        display_type,
                         status_text,
                     ),
                     tags=(status_text,),

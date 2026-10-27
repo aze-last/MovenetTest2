@@ -1075,13 +1075,18 @@ class CameraFeedWidget(ttk.Frame):
                     cam_self = self  # capture reference for callback closure
                     def _on_inference_complete(result_packet, _cam_self=cam_self, _bfidx=benchmark_frame_idx):
                         try:
+                            # Drop backpressure frames silently so canvas retains the last valid annotated frame
+                            if getattr(result_packet, "processing_mode", None) == "Queue Drop (Backpressure)":
+                                return
+
                             frame_to_show = result_packet.frame
                             alert_active = result_packet.alert_triggered
                             
-                            # OpenCV resize is extremely fast, do it on the background thread using bilinear
+                            # OpenCV resize on background thread: use INTER_AREA when downscaling for crisp non-pixelated lines
                             cw = _cam_self.target_width
                             ch = _cam_self.target_height
-                            resized_bgr = cv2.resize(frame_to_show, (cw, ch), interpolation=cv2.INTER_LINEAR)
+                            interp = cv2.INTER_AREA if (frame_to_show.shape[1] > cw and frame_to_show.shape[0] > ch) else cv2.INTER_LINEAR
+                            resized_bgr = cv2.resize(frame_to_show, (cw, ch), interpolation=interp)
                             rgb = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB)
                             img_pil = Image.fromarray(rgb)
                             
@@ -1170,10 +1175,11 @@ class CameraFeedWidget(ttk.Frame):
                 frame_to_show = packet.frame
                 alert_active = packet.alert_triggered
                 
-                # Perform resize using cv2.INTER_LINEAR, then convert BGR to RGB
+                # Perform resize using INTER_AREA when downscaling to preserve bounding box clarity
                 cw = self.target_width
                 ch = self.target_height
-                resized_bgr = cv2.resize(frame_to_show, (cw, ch), interpolation=cv2.INTER_LINEAR)
+                interp = cv2.INTER_AREA if (frame_to_show.shape[1] > cw and frame_to_show.shape[0] > ch) else cv2.INTER_LINEAR
+                resized_bgr = cv2.resize(frame_to_show, (cw, ch), interpolation=interp)
                 rgb = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB)
                 img_pil = Image.fromarray(rgb)
                 

@@ -286,6 +286,10 @@ class CentralInferenceManager:
         """Single draw helper for contraband boxes (live + power-saving paths).
         Renders clean institutional bounding box with corner brackets and high-contrast pill badge."""
         import cv2
+        frame_h, frame_w = frame.shape[:2]
+        base_thick = max(2, int(frame_w / 720))
+        bracket_thick = base_thick + 1
+
         for det in self._contraband_for_render(detections):
             name = det.get("name", "Unknown")
             track_id = det.get("track_id", -1)
@@ -293,24 +297,24 @@ class CentralInferenceManager:
             x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
             alert_color = (0, 0, 255)
 
-            # Professional CCTV frame with corner brackets
-            cv2.rectangle(frame, (x1, y1), (x2, y2), alert_color, 1)
-            c_len = min(12, max(4, (x2 - x1) // 4), max(4, (y2 - y1) // 4))
-            cv2.line(frame, (x1, y1), (x1 + c_len, y1), alert_color, 2)
-            cv2.line(frame, (x1, y1), (x1, y1 + c_len), alert_color, 2)
-            cv2.line(frame, (x2, y1), (x2 - c_len, y1), alert_color, 2)
-            cv2.line(frame, (x2, y1), (x2, y1 + c_len), alert_color, 2)
-            cv2.line(frame, (x1, y2), (x1 + c_len, y2), alert_color, 2)
-            cv2.line(frame, (x1, y2), (x1, y2 - c_len), alert_color, 2)
-            cv2.line(frame, (x2, y2), (x2 - c_len, y2), alert_color, 2)
-            cv2.line(frame, (x2, y2), (x2, y2 - c_len), alert_color, 2)
+            # Professional CCTV frame with corner brackets (Anti-Aliased with solid stroke)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), alert_color, base_thick, lineType=cv2.LINE_AA)
+            c_len = min(20, max(8, (x2 - x1) // 4), max(8, (y2 - y1) // 4))
+            cv2.line(frame, (x1, y1), (x1 + c_len, y1), alert_color, bracket_thick, lineType=cv2.LINE_AA)
+            cv2.line(frame, (x1, y1), (x1, y1 + c_len), alert_color, bracket_thick, lineType=cv2.LINE_AA)
+            cv2.line(frame, (x2, y1), (x2 - c_len, y1), alert_color, bracket_thick, lineType=cv2.LINE_AA)
+            cv2.line(frame, (x2, y1), (x2, y1 + c_len), alert_color, bracket_thick, lineType=cv2.LINE_AA)
+            cv2.line(frame, (x1, y2), (x1 + c_len, y2), alert_color, bracket_thick, lineType=cv2.LINE_AA)
+            cv2.line(frame, (x1, y2), (x1, y2 - c_len), alert_color, bracket_thick, lineType=cv2.LINE_AA)
+            cv2.line(frame, (x2, y2), (x2 - c_len, y2), alert_color, bracket_thick, lineType=cv2.LINE_AA)
+            cv2.line(frame, (x2, y2), (x2, y2 - c_len), alert_color, bracket_thick, lineType=cv2.LINE_AA)
 
             label_text = f"ALERT: {name.upper()} {int(conf*100)}% (THR: >=30%) ID:{track_id}" if conf > 0 else f"ALERT: {name.upper()} (ID: {track_id})"
             font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.48
-            (tw, th), _ = cv2.getTextSize(label_text, font, font_scale, 1)
-            badge_h = th + 6
-            badge_w = tw + 8
+            font_scale = 0.50
+            (tw, th), _ = cv2.getTextSize(label_text, font, font_scale, 2)
+            badge_h = th + 8
+            badge_w = tw + 10
             if y1 - badge_h >= 0:
                 by1 = y1 - badge_h
                 by2 = y1
@@ -321,8 +325,8 @@ class CentralInferenceManager:
             bx2 = min(frame.shape[1], bx1 + badge_w)
 
             cv2.rectangle(frame, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
-            cv2.rectangle(frame, (bx1, by1), (bx2, by2), alert_color, 1)
-            cv2.putText(frame, label_text, (bx1 + 4, by2 - 4), font, font_scale, (0, 80, 255), 1, cv2.LINE_AA)
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), alert_color, base_thick, lineType=cv2.LINE_AA)
+            cv2.putText(frame, label_text, (bx1 + 5, by2 - 5), font, font_scale, (0, 80, 255), 2, lineType=cv2.LINE_AA)
 
     def _compute_is_alert(self, packet, p):
         """Raw per-frame alert state for a person: legacy behavior detection (matched by
@@ -342,22 +346,26 @@ class CentralInferenceManager:
 
         color = (0, 0, 255) if is_alert else (0, 255, 0)
         x1, y1, x2, y2 = bbox
+        frame_h, frame_w = frame.shape[:2]
+        base_thick = max(2, int(frame_w / 720))
+        bracket_thick = base_thick + 1
 
-        # Professional CCTV bounding box: 1px frame + corner brackets
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
-        c_len = min(16, max(6, (x2 - x1) // 5), max(6, (y2 - y1) // 5))
+        # Professional CCTV bounding box: 2px+ anti-aliased frame + reinforced corner brackets
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, base_thick, lineType=cv2.LINE_AA)
+        c_len = min(24, max(8, (x2 - x1) // 5), max(8, (y2 - y1) // 5))
         # Top-left
-        cv2.line(frame, (x1, y1), (x1 + c_len, y1), color, 2)
-        cv2.line(frame, (x1, y1), (x1, y1 + c_len), color, 2)
+        cv2.line(frame, (x1, y1), (x1 + c_len, y1), color, bracket_thick, lineType=cv2.LINE_AA)
+        cv2.line(frame, (x1, y1), (x1 + c_len, y1), color, bracket_thick, lineType=cv2.LINE_AA) # wait, line 2 is x1, y1+c_len
+        cv2.line(frame, (x1, y1), (x1, y1 + c_len), color, bracket_thick, lineType=cv2.LINE_AA)
         # Top-right
-        cv2.line(frame, (x2, y1), (x2 - c_len, y1), color, 2)
-        cv2.line(frame, (x2, y1), (x2, y1 + c_len), color, 2)
+        cv2.line(frame, (x2, y1), (x2 - c_len, y1), color, bracket_thick, lineType=cv2.LINE_AA)
+        cv2.line(frame, (x2, y1), (x2, y1 + c_len), color, bracket_thick, lineType=cv2.LINE_AA)
         # Bottom-left
-        cv2.line(frame, (x1, y2), (x1 + c_len, y2), color, 2)
-        cv2.line(frame, (x1, y2), (x1, y2 - c_len), color, 2)
+        cv2.line(frame, (x1, y2), (x1 + c_len, y2), color, bracket_thick, lineType=cv2.LINE_AA)
+        cv2.line(frame, (x1, y2), (x1, y2 - c_len), color, bracket_thick, lineType=cv2.LINE_AA)
         # Bottom-right
-        cv2.line(frame, (x2, y2), (x2 - c_len, y2), color, 2)
-        cv2.line(frame, (x2, y2), (x2, y2 - c_len), color, 2)
+        cv2.line(frame, (x2, y2), (x2 - c_len, y2), color, bracket_thick, lineType=cv2.LINE_AA)
+        cv2.line(frame, (x2, y2), (x2, y2 - c_len), color, bracket_thick, lineType=cv2.LINE_AA)
 
         id_text = f"ID {stable_id}"
         if is_alert and alert_types:
@@ -366,10 +374,10 @@ class CentralInferenceManager:
                 id_text = f"ID {stable_id} | {' | '.join(sorted_types)}"
 
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.50
-        (tw, th), _ = cv2.getTextSize(id_text, font, font_scale, 1)
-        badge_h = th + 6
-        badge_w = tw + 8
+        font_scale = 0.52
+        (tw, th), _ = cv2.getTextSize(id_text, font, font_scale, 2)
+        badge_h = th + 8
+        badge_w = tw + 10
         if y1 - badge_h >= 0:
             by1 = y1 - badge_h
             by2 = y1
@@ -380,9 +388,9 @@ class CentralInferenceManager:
         bx2 = min(frame.shape[1], bx1 + badge_w)
 
         cv2.rectangle(frame, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
-        cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 1)
+        cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, base_thick, lineType=cv2.LINE_AA)
         text_color = (255, 255, 255) if not is_alert else (0, 100, 255)
-        cv2.putText(frame, id_text, (bx1 + 4, by2 - 4), font, font_scale, text_color, 1, cv2.LINE_AA)
+        cv2.putText(frame, id_text, (bx1 + 5, by2 - 5), font, font_scale, text_color, 2, lineType=cv2.LINE_AA)
 
         if get_concealment_config("enabled", True) and hand_observations:
             l_state = "Unknown"
@@ -410,20 +418,20 @@ class CentralInferenceManager:
 
             if has_known:
                 badge_text = f"L: {l_state} | R: {r_state}"
-                (hw, hh), _ = cv2.getTextSize(badge_text, font, 0.45, 1)
+                (hw, hh), _ = cv2.getTextSize(badge_text, font, 0.48, 1)
                 hy1 = y2 - hh - 8 if y2 - hh - 8 > by2 else by2 + 2
                 hy2 = min(frame.shape[0], hy1 + hh + 6)
                 hx1 = max(0, x1)
                 hx2 = min(frame.shape[1], hx1 + hw + 8)
                 cv2.rectangle(frame, (hx1, hy1), (hx2, hy2), (20, 20, 20), -1)
-                cv2.rectangle(frame, (hx1, hy1), (hx2, hy2), (0, 220, 220), 1)
+                cv2.rectangle(frame, (hx1, hy1), (hx2, hy2), (0, 220, 220), base_thick, lineType=cv2.LINE_AA)
                 cv2.putText(
                     frame,
                     badge_text,
                     (hx1 + 4, hy2 - 4),
                     font,
-                    0.45,
-                    (0, 255, 255),
+                    0.48,
+                    (255, 255, 255),
                     1,
                     cv2.LINE_AA,
                 )
@@ -766,30 +774,19 @@ class CentralInferenceManager:
                             if ctx:
                                 ctx.mark("fusion_start")
                             # 1. Update Fused Telemetry State
-                            get_camera_fusion().update(packet)
+                            fusion = get_camera_fusion()
+                            fusion.update(packet)
                             if ctx:
                                 ctx.mark("fusion_end")
                                 ctx.mark("decision_start")
 
-                            # 2. Evaluate Decision
-                            decision_engine = get_decision_engine()
-                            
-                            # Publish Tick to allow Hysteresis state machine to progress
+                            # 2. Progress Hysteresis state machine
                             get_event_bus().publish("FRAME_TICK", camera_id=packet.camera_id)
-                            
-                            if decision_engine.evaluate_trigger(packet):
-                                # 3. Command Alert execution via Event Bus
-                                evt_type, conf_scores = decision_engine.get_event_details(packet)
-                                severity = decision_engine.get_severity(packet)
-                                get_event_bus().publish(
-                                    "DECISION_TRIGGER",
-                                    camera_id=packet.camera_id,
-                                    event_type=evt_type,
-                                    confidence_scores=conf_scores,
-                                    severity=severity,
-                                    frame=packet.frame,
-                                    ai_results=res
-                                )
+
+                            # 3. Evaluate Decision with Cross-Camera Zone Deduplication
+                            decision_engine = get_decision_engine()
+                            fusion.process_decision_trigger(packet, decision_engine, ai_results=res)
+
                             if ctx:
                                 ctx.mark("decision_end")
                         except Exception as route_ex:
