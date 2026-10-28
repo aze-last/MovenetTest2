@@ -1,68 +1,67 @@
-# PLAN.md — Phase 3: Opportunistic Face Binding & Phase 4: Cross-Camera Zone Deduplication
+# PLAN.md — Beating Sound Alert Loop & Sustained Contraband ID Dismissal Monitoring
 
 ## 1. Spec & Objective
 - **Problem:**
-  1. **Phase 3:** While single-camera tracking assigns stable IDs locally, subjects lack institutional identities. Running face recognition continuously is computationally prohibitive on CPU and raises privacy concerns if unconstrained.
-  2. **Phase 4:** When multiple cameras cover overlapping fields of view in the same jail zone/cell, an altercation or contraband detection triggers duplicate alarm storms, repeated audio beeps, and multiple fragmented incidents in `incidents.db` from each camera independently.
-- **Hypothesis:**
-  1. **Opportunistic Face Binding (Phase 3):** Gated 1 Hz sampling on unbound tracks with $k$-of-$N$ multi-frame confirmation ($k=3$ of $N=5$, cosine threshold $\ge 0.363$), anti-collision enforcement, and a strict default-off privacy toggle (`face_recognition.enabled: false`) enables biometric identity binding on CPU without degrading 20–30 FPS real-time throughput.
-  2. **Cross-Camera Zone Deduplication (Phase 4):** Centralizing decision trigger authority in `CameraFusion` with a 7.0-second cross-camera sliding window per zone suppresses redundant alert storms and merges multi-camera evidence into unified institutional incidents.
-- **Invariants & Constraints:**
-  - **Rule 8 (Dependency Freeze):** Use standard library + OpenCV's built-in `cv2.FaceDetectorYN` and `cv2.FaceRecognizerSF`. No new third-party packages.
-  - **Data Privacy Act of 2012 (RA 10173):** Default `face_recognition.enabled: false`. No persistent facial biometric feature dumps in git or code.
-  - **Anti-Collision Invariant:** One inmate identity cannot be simultaneously bound to two distinct tracks in the same camera view.
-  - **Rule 1 (Threading):** Thread safety via `with self.lock:` in `CameraFusion` and `OpportunisticFaceBinder`.
+  1. **Transient Audio Alarm:** Currently, when an alert fires, `SoundAlertManager` plays a single brief beep. If the operator is attending to other tasks, this brief sound is easily missed. The operator requires a continuous rhythmic "beating" heartbeat pulse that loops persistently until dismissed.
+  2. **False Positives from Light Sources & Alert Storms:** Stationary light-emitting objects (lights, reflections, glares, shiny surfaces) are frequently classified as `cellphone`. When the operator clicks "Dismiss", the UI banner closes for a fraction of a second, but on the very next frame, the same light source triggers `DECISION_TRIGGER` and `INCIDENT_START` all over again. The operator cannot dismiss that specific light source while it remains in view.
+- **Solution & Invariants:**
+  1. **Continuous Beating Audio Loop:** `SoundAlertManager` provides a thread-safe, non-blocking beating heartbeat pulse loop (`start_beating_loop`, `stop_beating_loop`) using native Windows `winsound.Beep` (double-thump cadence: 480 Hz / 440 Hz) that plays until the operator clicks "Dismiss".
+  2. **Sustained Contraband Tracking by ID:** Contraband detections maintain a stable ID (`track_id` from ByteTrack or spatial grid key for untracked items).
+  3. **ID-Specific Dismissal Registry:** Clicking "Dismiss" registers that `(camera_id, contraband_track_id)` as dismissed. While that specific ID continues to be seen or coasted within hysteresis TTL, it is suppressed from re-triggering alert banners or audio beeps.
+  4. **New Detection Trigger Invariant:** If a *new* contraband detection with a different ID appears (or on another camera), it is NOT in the dismissed registry and immediately fires a new detection alert message and restarts the beating sound loop.
+  5. **Visual Distinction:** Sustained dismissed items are rendered with muted styling (`[DISMISSED]`, gray border) so operators maintain visual observability without alarm fatigue.
+  6. **Rule 8 (Dependency Freeze):** Zero new pip dependencies. Uses Python standard library `winsound` and `threading`.
 
 ---
 
 ## 2. Scoped Tasks
 
-### T1 — Phase 3: Opportunistic Face Binding Engine
-- **Surface:** `monitor_app/tracking/face_binder.py`
+### T1 — Beating Sound Loop in `SoundAlertManager`
+- **Surface:** `monitor_app/alert_manager.py`
 - **Scope:**
-  1. Implement `OpportunisticFaceBinder` wrapping `cv2.FaceDetectorYN` and `cv2.FaceRecognizerSF` using CPU execution.
-  2. Support enrollment gallery: `enroll_subject(subject_id: str, name: str, face_img_or_embedding: np.ndarray)`.
-  3. Gated 1 Hz probe logic: only probes unbound tracks whose bounding box exceeds $60\text{ px}$ height and confidence $> 0.5$.
-  4. $k$-of-$N$ confirmation: tracks maintain a buffer of recent matches; identity is confirmed only when $\ge 3$ of the last 5 probes match with cosine similarity $\ge 0.363$.
-  5. Anti-collision: if identity $X$ is active on track $A$, track $B$ cannot bind identity $X$.
-  6. Privacy compliance: if `get_config("face_recognition", "enabled", False)` is false, immediately returns without running inference.
-- **Test:** `tests/test_face_binding.py`
-- **Gate:** Tests pass verifying enrollment, $k$-of-$N$ binding, anti-collision prevention, and disabled mode bypass.
+  1. Add `_is_beating` flag, `_beating_thread`, and `_beating_lock` to `SoundAlertManager`.
+  2. Implement `start_beating_loop(alert_id=None)`: launches a daemon background thread that generates a rhythmic double-pulse heartbeat (`winsound.Beep(480, 80)` -> pause `0.06s` -> `winsound.Beep(440, 100)` -> pause `0.65s`).
+  3. Implement `stop_beating_loop()`: thread-safely sets `_is_beating = False` to terminate playback immediately.
+  4. Implement `is_beating() -> bool`.
+- **Test:** `tests/test_sound_alert_loop.py`
+- **Gate:** Tests pass verifying loop start, non-blocking execution, and immediate stop.
 
-### T2 — Phase 4: Cross-Camera Zone Deduplication in `CameraFusion`
-- **Surface:** `monitor_app/fusion.py`
+### T2 — Sustained Contraband ID Tracking & Dismissal Registry
+- **Surface:** `monitor_app/decision.py`
 - **Scope:**
-  1. Upgrade `CameraFusion` with zone alert state tracking:
-     `active_zone_events: Dict[Tuple[str, str], Dict[str, Any]]` indexed by `(zone_id, event_type)`.
-  2. Implement `resolve_zone(camera_id: str) -> str`: reads `config.yaml: fusion.camera_zones` or defaults to `f"Zone_{camera_id}"`.
-  3. Implement `process_decision_trigger(packet, decision_engine, res) -> bool`:
-     - Checks if `decision_engine.evaluate_trigger(packet)` is true.
-     - Resolves `(zone_id, event_type)`.
-     - If no active event exists in `zone_id` for `event_type` within `zone_dedup_window_s` (default 7.0s):
-       Publishes `DECISION_TRIGGER` to EventBus and opens active zone event.
-     - If an active event already exists in the same zone within the sliding window:
-       Suppresses duplicate `DECISION_TRIGGER` (prevents alarm storm / duplicate audio beeps), updates active event's timestamp, and records corroborating camera evidence.
-- **Test:** `tests/test_zone_fusion.py`
-- **Gate:** Tests pass verifying single-camera pass-through, multi-camera zone alert suppression, and window expiration.
+  1. Implement `ContrabandDismissalRegistry` singleton in `monitor_app/decision.py`:
+     - Tracks `dismissed_tracks: Dict[str, Dict[Any, float]]` mapping `camera_id -> {track_id: timestamp_dismissed}`.
+     - `dismiss_track(camera_id, track_id)`: registers dismissal.
+     - `is_track_dismissed(camera_id, track_id) -> bool`: checks if track is active in dismissal window (TTL = 15.0s from last sighting).
+     - `touch_track(camera_id, track_id)`: updates last seen timestamp for active dismissed track.
+     - `prune_stale()`: cleans up tracks not seen for > 15s.
+  2. In `DecisionEngine.evaluate_trigger(packet)`:
+     - Filters contraband detections against `ContrabandDismissalRegistry`.
+     - If all detected contraband items on the packet have been dismissed by the operator, suppress contraband trigger for this packet.
+     - If a *new* or un-dismissed contraband ID is present, allow trigger and return `True`.
+  3. Expose helper `get_dismissal_registry()`.
+- **Test:** `tests/test_contraband_dismissal.py`
+- **Gate:** Tests pass verifying sustained ID dismissal, suppression of dismissed contraband, and immediate triggering of new/different contraband IDs.
 
-### T3 — Phase 4: Shift Trigger Authority in `central_inference.py`
-- **Surface:** `monitor_app/central_inference.py`
+### T3 — Camera View & Banner Integration
+- **Surface:** `monitor_app/camera_view.py`
 - **Scope:**
-  Update lines 760–795 to route decision trigger evaluation through `get_camera_fusion().process_decision_trigger(packet, decision_engine, res)` while keeping `FRAME_TICK` publishing intact.
-- **Test:** `tests/test_zone_fusion.py` integration check.
-- **Gate:** System regression tests pass.
+  1. In `CameraMonitorScreen._show_alert_banner`:
+     - Collects `active_contraband_track_ids` from `ai_results` or `packet.detections`.
+     - Calls `get_sound_alert_manager().start_beating_loop(incident_id)`.
+  2. In `CameraMonitorScreen._dismiss_alert_banner`:
+     - Calls `get_sound_alert_manager().stop_beating_loop()`.
+     - Calls `get_dismissal_registry().dismiss_track(camera_id, tid)` for each active contraband track.
+  3. In `CameraMonitorScreen._review_active_incident` and `stop_monitoring`:
+     - Calls `get_sound_alert_manager().stop_beating_loop()`.
+  4. In `CameraFeedWidget` / BBox Drawing:
+     - Check `is_track_dismissed(camera_id, track_id)`. If dismissed, render label as `f"{name.upper()} [DISMISSED]"` with muted border color (`#64748b`).
+- **Test:** `tests/test_dismissal_ui_flow.py`
+- **Gate:** Tests pass verifying dismissal banner, sound stop, and track dismissal integration.
 
-### T4 — Verification, Pre-Flight Gate & Documentation
-- **Surface:** `capstone_progress_report.md`, `CHECKLIST_AND_REMEDIES.md`, `changes_today.zip`
+### T4 — Mechanical Gate, Verification & Documentation
+- **Surface:** `capstone_progress_report.md`, `changes_today.zip`
 - **Scope:**
-  1. Run `pytest tests/` (100% passing).
-  2. Run `.agents/team/diff-scan.ps1` (GREEN).
-  3. Verify diff with `agy-verifier`.
-  4. Document changes in `capstone_progress_report.md` and bundle into `changes_today.zip`.
-
----
-
-## 3. Edge Cases & Safety
-1. **Model Missing Fallback:** If YuNet/SFace ONNX files are missing from disk, `OpportunisticFaceBinder` logs a graceful warning and disables face recognition without crashing the main application.
-2. **Zone Configuration Fallback:** If a camera has no explicit zone entry in `config.yaml`, it automatically maps to its own isolated zone (`Zone_<camera_id>`), ensuring standard single-camera deployments work without any configuration changes.
-3. **Sliding Window Expiration:** Active zone events are cleaned up when idle past `zone_dedup_window_s`, preventing memory accumulation.
+  1. Run `diff-scan.ps1` (all tests GREEN).
+  2. Log all line numbers and purpose in `capstone_progress_report.md` (Section 22).
+  3. Bundle modified files in `changes_today.zip`.

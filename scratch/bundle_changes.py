@@ -29,6 +29,13 @@ files_to_pack = [
     "tests/test_dashboard_incidents_ui.py",
     "tests/test_reports_settings_ui.py",
     "tests/test_installer_prereqs.py",
+    "tests/test_sound_alert_loop.py",
+    "tests/test_contraband_dismissal.py",
+    "tests/test_dismissal_ui_flow.py",
+    "monitor_app/decision.py",
+    "monitor_app/ai_engine.py",
+    "tests/test_dynamic_contraband_tracking.py",
+    "PLAN.md",
     "artifacts/installer/version.json"
 ]
 

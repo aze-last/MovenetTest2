@@ -22,10 +22,15 @@ class SoundAlertManager:
     """
     Asynchronous, rate-limited institutional audio alert engine.
     Plays distinct audio tones for security incidents without blocking UI or inference.
+    Supports continuous beating heartbeat loop until operator dismissal.
     """
     def __init__(self):
         self.lock = threading.Lock()
         self.last_played_time = 0.0
+        self._is_beating = False
+        self._beating_thread = None
+        self._beating_lock = threading.Lock()
+        self.active_alert_id = None
         self._load_config()
 
     def _load_config(self):
@@ -77,6 +82,74 @@ class SoundAlertManager:
             except Exception:
                 pass
             logger.debug(f"Audio alert playback notice: {e}")
+
+    def is_beating(self) -> bool:
+        """Return True if continuous beating alert loop is actively running."""
+        with self._beating_lock:
+            return self._is_beating
+
+    def start_beating_loop(self, alert_id: str = None):
+        """
+        Start continuous rhythmic beating heartbeat audio pulse in background thread.
+        Loops persistently until operator explicitly calls stop_beating_loop().
+        """
+        if not self.enabled:
+            return
+
+        with self._beating_lock:
+            if self._is_beating:
+                if alert_id:
+                    self.active_alert_id = alert_id
+                return
+            self._is_beating = True
+            self.active_alert_id = alert_id
+            self._beating_thread = threading.Thread(target=self._beating_worker, daemon=True)
+            self._beating_thread.start()
+            logger.info(f"Continuous beating alert loop STARTED (Alert: {alert_id})")
+
+    def stop_beating_loop(self):
+        """
+        Immediately stop continuous beating alert loop (e.g. upon operator dismissal).
+        """
+        with self._beating_lock:
+            if not self._is_beating:
+                return
+            self._is_beating = False
+            self.active_alert_id = None
+            logger.info("Continuous beating alert loop STOPPED")
+
+    def _beating_worker(self):
+        """
+        Background worker that plays institutional double-thump heartbeat pulse.
+        Double-pulse: 480 Hz (80ms) -> pause 60ms -> 440 Hz (100ms) -> pause 650ms.
+        """
+        if not WINSOUND_AVAILABLE or winsound is None:
+            return
+
+        while True:
+            with self._beating_lock:
+                if not self._is_beating:
+                    break
+
+            try:
+                # First thump (higher frequency, shorter)
+                winsound.Beep(480, 80)
+                time.sleep(0.06)
+                # Second thump (lower frequency, resonant)
+                winsound.Beep(440, 100)
+            except Exception as e:
+                try:
+                    winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                except Exception:
+                    pass
+                logger.debug(f"Beating alert sound notice: {e}")
+
+            # Inter-beat pause (~650ms), checking cancellation every 50ms for responsive shutdown
+            for _ in range(13):
+                with self._beating_lock:
+                    if not self._is_beating:
+                        break
+                time.sleep(0.05)
 
 
 _global_sound_alert = SoundAlertManager()

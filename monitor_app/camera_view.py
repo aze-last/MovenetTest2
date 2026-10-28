@@ -920,6 +920,8 @@ class CameraMonitorScreen(ttk.Frame):
         self.cameras = []
         self.grid_container = None
         self.active_alert_incident_id = None
+        self.active_alert_camera_id = None
+        self.active_alert_contraband_ids = []
         self._alert_banner_visible = False
         self._alert_thumb_photo = None
         self._alert_auto_dismiss_job = None
@@ -1060,7 +1062,13 @@ class CameraMonitorScreen(ttk.Frame):
         """EventBus callback for confirmed incidents"""
         try:
             if self.winfo_exists() and getattr(self, "_is_monitoring", False):
-                self.after_idle(lambda c=camera_id, i=incident_id, e=event_type, f=frame, s=severity: self._show_alert_banner(c, i, e, f, severity=s))
+                c_ids = []
+                if ai_results and isinstance(ai_results, dict):
+                    for det in ai_results.get("detections", {}).get("contraband", []):
+                        tid = det.get("track_id")
+                        if tid is not None and tid != -1:
+                            c_ids.append(tid)
+                self.after_idle(lambda c=camera_id, i=incident_id, e=event_type, f=frame, s=severity, ci=c_ids: self._show_alert_banner(c, i, e, f, severity=s, contraband_ids=ci))
         except Exception:
             pass
 
@@ -1068,13 +1076,31 @@ class CameraMonitorScreen(ttk.Frame):
         """EventBus callback for fast preliminary decision triggers"""
         try:
             if self.winfo_exists() and getattr(self, "_is_monitoring", False):
-                self.after_idle(lambda c=camera_id, i=getattr(self, "active_alert_incident_id", None), e=event_type, f=frame, sc=confidence_scores, s=severity: self._show_alert_banner(c, i, e, f, sc, severity=s))
+                c_ids = []
+                if ai_results and isinstance(ai_results, dict):
+                    for det in ai_results.get("detections", {}).get("contraband", []):
+                        tid = det.get("track_id")
+                        if tid is not None and tid != -1:
+                            c_ids.append(tid)
+                self.after_idle(lambda c=camera_id, i=getattr(self, "active_alert_incident_id", None), e=event_type, f=frame, sc=confidence_scores, s=severity, ci=c_ids: self._show_alert_banner(c, i, e, f, sc, severity=s, contraband_ids=ci))
         except Exception:
             pass
 
-    def _show_alert_banner(self, camera_id, incident_id, event_type, frame=None, scores=None, severity=None):
+    def _show_alert_banner(self, camera_id, incident_id, event_type, frame=None, scores=None, severity=None, contraband_ids=None):
         if incident_id:
             self.active_alert_incident_id = incident_id
+        self.active_alert_camera_id = str(camera_id)
+        if contraband_ids:
+            self.active_alert_contraband_ids = list(contraband_ids)
+        elif not hasattr(self, "active_alert_contraband_ids"):
+            self.active_alert_contraband_ids = []
+
+        # Start continuous beating audio alert loop until dismissed
+        try:
+            from monitor_app.alert_manager import get_sound_alert_manager
+            get_sound_alert_manager().start_beating_loop(incident_id or f"ALERT_{camera_id}")
+        except Exception:
+            pass
         
         # Format title & subtitle with threshold indicators & severity
         sev_tag = f" [{severity}]" if severity else ""
@@ -1111,6 +1137,24 @@ class CameraMonitorScreen(ttk.Frame):
         self._alert_auto_dismiss_job = self.after(20000, self._dismiss_alert_banner)
 
     def _dismiss_alert_banner(self):
+        # 1. Stop beating sound immediately upon dismissal
+        try:
+            from monitor_app.alert_manager import get_sound_alert_manager
+            get_sound_alert_manager().stop_beating_loop()
+        except Exception:
+            pass
+
+        # 2. Register dismissal for the active contraband track IDs on this camera
+        try:
+            from monitor_app.decision import get_dismissal_registry
+            reg = get_dismissal_registry()
+            cam_id = getattr(self, "active_alert_camera_id", None)
+            if cam_id:
+                for tid in getattr(self, "active_alert_contraband_ids", []):
+                    reg.dismiss_track(cam_id, tid)
+        except Exception:
+            pass
+
         if self._alert_banner_visible:
             self.alert_banner_frame.pack_forget()
             self._alert_banner_visible = False
@@ -1120,6 +1164,11 @@ class CameraMonitorScreen(ttk.Frame):
 
     def _review_active_incident(self):
         """Jump to Incidents screen with the current active alert incident loaded."""
+        try:
+            from monitor_app.alert_manager import get_sound_alert_manager
+            get_sound_alert_manager().stop_beating_loop()
+        except Exception:
+            pass
         root = self.winfo_toplevel()
         target_id = getattr(self, "active_alert_incident_id", None)
         if not target_id:
@@ -1268,6 +1317,11 @@ class CameraMonitorScreen(ttk.Frame):
         pass
 
     def stop_monitoring(self):
+        try:
+            from monitor_app.alert_manager import get_sound_alert_manager
+            get_sound_alert_manager().stop_beating_loop()
+        except Exception:
+            pass
         self._is_monitoring = False
         self._connecting = False
         if hasattr(self, "_poll_connecting_job") and self._poll_connecting_job:
@@ -1662,6 +1716,26 @@ class CameraFeedWidget(ttk.Frame):
                 gate_active = getattr(self, "_motion_gate_enabled", False) or has_active or ungated
                 
                 if gate_active:
+                    # Pacing check: if this camera already has an inference task in flight,
+                    # don't pile onto task_queue to cause backpressure drop.
+                    # Instead, push current frame directly into display queue (smooth 30 FPS display)
+                    # while GPU processes the previous frame.
+                    if manager.has_in_flight_task(str(self.camera_id)):
+                        cw = self.target_width
+                        ch = self.target_height
+                        interp = cv2.INTER_AREA if (raw_frame.shape[1] > cw and raw_frame.shape[0] > ch) else cv2.INTER_LINEAR
+                        resized_bgr = cv2.resize(raw_frame, (cw, ch), interpolation=interp)
+                        rgb = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB)
+                        img_pil = Image.fromarray(rgb)
+                        
+                        if self.result_queue.full():
+                            try:
+                                self.result_queue.get_nowait()
+                            except queue.Empty:
+                                pass
+                        self.result_queue.put((img_pil, getattr(self, "last_alert_triggered", False), getattr(self, "last_alert_desc", "")))
+                        continue
+
                     # Initialize initial packet and submit to centralized GPU queue
                     from monitor_app.telemetry import TelemetryContext, get_telemetry_engine
                     telemetry_ctx = TelemetryContext(camera_id=str(self.camera_id), sequence_num=benchmark_frame_idx)

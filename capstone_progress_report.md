@@ -1517,3 +1517,127 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
   2. **Diff-Scan Mechanical Gate (`.agents/team/diff-scan.ps1`):**
      - 31 out of 31 test suites passed in 27.99s.
      - Result: **`RESULT: GREEN`**.
+
+
+---
+
+## 22. Beating Sound Alert Loop & Sustained Contraband Track ID Dismissal Monitoring
+- **Objective & Scope:**
+  - Resolved the alert fatigue problem where stationary light-emitting or reflective objects (lamps, reflections, glare) are classified as contraband (e.g. `cellphone`) and re-trigger an alarm immediately after the operator clicks "Dismiss".
+  - Implemented sustained contraband track ID persistence and an operator dismissal registry so dismissed detections remain silenced as long as they are sustained in view, while any *new* contraband detection immediately triggers a fresh alert.
+  - Implemented a continuous, rhythmic "beating" heartbeat audio alarm pulse (`winsound.Beep` double-thump: 480 Hz / 440 Hz) that loops persistently until the operator dismisses the detection.
+  - Added visual observability: dismissed contraband items render with muted slate-gray bounding boxes and `[DISMISSED]` labels so operators know the system is monitoring the object without triggering alerts.
+
+- **Detailed Line-by-Line Changes:**
+  1. `monitor_app/alert_manager.py`:
+     - Lines 27–34 (`SoundAlertManager.__init__`):
+       - Added `self._is_beating = False`, `self._beating_thread = None`, `self._beating_lock = threading.Lock()`, and `self.active_alert_id = None`.
+       - Purpose: Maintains state for the continuous beating sound loop.
+     - Lines 87–145 (`SoundAlertManager` Loop API):
+       - Added `is_beating(self) -> bool`: Thread-safe query for audio loop status.
+       - Added `start_beating_loop(self, alert_id=None)`: Spawns a daemon background thread running `_beating_worker`.
+       - Added `stop_beating_loop(self)`: Signals thread termination and resets active alert ID immediately.
+       - Added `_beating_worker(self)`: Synthesizes a rhythmic institutional double-thump pulse (480 Hz for 80ms, 60ms pause, 440 Hz for 100ms, 650ms inter-beat pause with 50ms responsive interrupt checks).
+       - Purpose: Provides continuous, non-ignorable alert audio until operator action without blocking inference or the UI thread.
+
+  2. `monitor_app/decision.py`:
+     - Lines 10–75 (`ContrabandDismissalRegistry`):
+       - Implemented thread-safe `ContrabandDismissalRegistry` singleton (`get_dismissal_registry()`).
+       - Implemented `dismiss_track(camera_id, track_id)`: Marks a specific contraband ID as dismissed by the operator.
+       - Implemented `is_track_dismissed(camera_id, track_id) -> bool`: Checks if track is within the active dismissal TTL (15.0s from last sighting).
+       - Implemented `touch_track(camera_id, track_id)`: Refreshes last seen timestamp so sustained detections stay dismissed.
+       - Implemented `prune_stale(ttl)`: Cleans up dismissed tracks after they leave the CCTV field of view.
+       - Purpose: Eliminates false-positive alert loops from static objects while preserving alert readiness for new objects.
+     - Lines 98–145 (`DecisionEngine.evaluate_trigger`):
+       - Evaluates contraband detections against `ContrabandDismissalRegistry`.
+       - If an object's `track_id` is dismissed, calls `touch_track()`, marks `det["dismissed"] = True`, and filters it out of `packet.alerts`.
+       - If all contraband items in the packet are dismissed and no behavior anomalies exist, returns `False` (suppresses recording and alarm).
+       - If a *new* un-dismissed contraband ID is present, allows alert and returns `True`.
+     - Lines 160–175 (`DecisionEngine.get_event_details`):
+       - Skips dismissed contraband items when compiling active event labels.
+
+  3. `monitor_app/camera_view.py`:
+     - Lines 922–925 (`CameraMonitorScreen.__init__`):
+       - Added `self.active_alert_camera_id = None` and `self.active_alert_contraband_ids = []`.
+     - Lines 1060–1075 (`CameraMonitorScreen._on_incident_alert` & `_on_decision_alert`):
+       - Extracts contraband track IDs from `ai_results` and forwards them to `_show_alert_banner`.
+     - Lines 1076–1110 (`CameraMonitorScreen._show_alert_banner`):
+       - Records active camera and contraband track IDs.
+       - Calls `get_sound_alert_manager().start_beating_loop()`.
+     - Lines 1113–1135 (`CameraMonitorScreen._dismiss_alert_banner`):
+       - Calls `get_sound_alert_manager().stop_beating_loop()` to halt audio immediately.
+       - Iterates over `self.active_alert_contraband_ids` and registers them with `get_dismissal_registry().dismiss_track()`.
+     - Lines 1122–1130 (`CameraMonitorScreen._review_active_incident`):
+       - Calls `get_sound_alert_manager().stop_beating_loop()` when jumping to incident review.
+     - Lines 1270–1280 (`CameraMonitorScreen.stop_monitoring`):
+       - Calls `get_sound_alert_manager().stop_beating_loop()` when leaving Live Monitor.
+
+  4. `monitor_app/central_inference.py`:
+     - Lines 305–338 (`_draw_contraband_boxes`):
+       - Checks `is_dismissed = bool(det.get("dismissed"))`.
+       - If dismissed: renders bounding box in muted slate gray `(139, 116, 100)` with label `"{NAME} #{TRACK_ID} [DISMISSED]"` in light gray.
+       - If un-dismissed: renders in high-visibility alert red `(0, 0, 255)` with orange pill badge.
+       - Purpose: Provides immediate visual confirmation of dismissed vs active detections.
+
+- **Verification & Mechanical Gate:**
+  1. **New Automated Unit Tests:**
+     - `tests/test_sound_alert_loop.py` (Beating sound start, stop, non-blocking execution, disabled mode bypass).
+     - `tests/test_contraband_dismissal.py` (Registry lifecycle, light glare suppression, and new ID alert triggering).
+     - `tests/test_dismissal_ui_flow.py` (End-to-end banner show -> beating sound -> dismiss click -> sound halt & track dismissal).
+  2. **Diff-Scan Mechanical Gate (`.agents/team/diff-scan.ps1`):**
+     - Result: **`RESULT: GREEN`** (All tests passed).
+  3. **Full Regression Suite (`pytest tests/`):**
+     - Result: **`170 passed, 1 warning in 26.07s`** (100% test pass rate).
+
+
+---
+
+## 23. Dynamic Contraband Tracking & Per-Camera Queue Pacing Remediations
+- **Objective & Scope:**
+  - Resolved the critical issue where an operator dismissed an intentional false positive (vape / light source), and subsequently showing a mobile phone was not detected or given an ID.
+  - Root Cause 1: In `ai_engine.py`, untracked contraband detections used a deterministic static spatial-grid hash (`abs(hash(f"untracked_{cls_id}_{gx}_{gy}")) % 9000 + 1000`). Because the user was in the same chair/area, the phone mapped to the exact same ID (`4441` / `6072`) as the dismissed vape, causing `DecisionEngine` to immediately silence it.
+  - Root Cause 2: In `central_inference.py` and `camera_view.py`, 4 cameras running at 30 FPS submitted 120 FPS into `self.task_queue` (max size 15). The GPU can process ~15-18 FPS total. 88% of frames were dropped to backpressure, returning raw unannotated frames to the UI and starving YOLO of incoming frames.
+  - Root Cause 3: In `central_inference.py:228`, `_draw_contraband_boxes` was called before `DecisionEngine` evaluated dismissals, and it did not have `camera_id` to query `ContrabandDismissalRegistry` directly.
+
+- **Detailed Line-by-Line Changes:**
+  1. `monitor_app/ai_engine.py`:
+     - Lines 660–755 (`DynamicContrabandTracker`):
+       - Implemented camera-scoped dynamic contraband tracker using IoU (0.25 threshold) and centroid proximity (90px fallback).
+       - Allocates monotonically incrementing unique track IDs (`self._next_track_id = 1001, 1002, 1003...`).
+       - Ages unmatched tracks across frames and prunes dead tracks after `max_lost_frames = 15`.
+       - Purpose: Guarantees that when an object leaves and a new object is presented, it receives a brand-new ID that is not dismissed.
+     - Lines 140–145 (`MotionOptimizedEngine.__init__`):
+       - Initialized `self.contraband_tracker = DynamicContrabandTracker()`.
+     - Lines 875–895 (`_run_yolo_logic`):
+       - Replaced static grid hash with `self.contraband_tracker.update(cam_id, [[x1, y1, x2, y2]], [conf], [cls_id])`.
+       - Purpose: Eliminates ID collision across sequential object presentations.
+
+  2. `monitor_app/central_inference.py`:
+     - Lines 58–62 (`CentralInferenceManager.__init__`):
+       - Added `self._in_flight_cameras = set()` and `self._in_flight_lock = threading.Lock()`.
+     - Lines 63–78 (`CentralInferenceManager` Pacing API):
+       - Added `has_in_flight_task(camera_id) -> bool`: Thread-safe query checking if an inference task for this camera is currently queued or executing.
+       - Added `mark_task_in_flight(camera_id)` and `clear_task_in_flight(camera_id)`.
+     - Lines 235 & 710 (`_draw_contraband_boxes` call sites):
+       - Passed `camera_id=camera_id` into `_draw_contraband_boxes`.
+     - Lines 305–325 (`_draw_contraband_boxes`):
+       - Directly checks `get_dismissal_registry().is_track_dismissed(camera_id, track_id)`.
+       - Renders dismissed items in muted slate gray `[DISMISSED]`, and un-dismissed items in high-visibility red `ALERT`.
+     - Lines 865, 878, 937, 955 (`_worker_loop`, `submit_task`, `submit_task_async`):
+       - Integrated in-flight tracking so tasks clear their in-flight state immediately upon completion or drop.
+
+  3. `monitor_app/camera_view.py`:
+     - Lines 1720–1745 (`CameraFeedWidget._worker_thread`):
+       - Added pacing check: if `manager.has_in_flight_task(str(self.camera_id))` is True, pushes the current frame directly to `self.result_queue` for fluid 30 FPS display without submitting duplicate tasks to `self.task_queue`.
+       - Purpose: Eliminates `Queue Overflow (Backpressure)` warnings and prevents frames from being dropped prior to inference.
+
+- **Verification & Mechanical Gate:**
+  1. **New Automated Unit Test (`tests/test_dynamic_contraband_tracking.py`):**
+     - Verified dynamic ID allocation when an object leaves and a new object is presented (`test_dynamic_contraband_tracker_allocates_new_id_on_new_object`).
+     - Verified DecisionEngine trigger differentiation between dismissed vape ID and new phone ID (`test_dismissal_differentiation_with_decision_engine`).
+     - Verified CentralInferenceManager in-flight pacing tracking (`test_central_inference_in_flight_pacing`).
+     - Output: **`3 passed in 2.96s`**.
+  2. **Diff-Scan Mechanical Gate (`.agents/team/diff-scan.ps1`):**
+     - Result: **`RESULT: GREEN`**.
+  3. **Full Regression Test Suite (`pytest tests/`):**
+     - Result: **`190 passed, 1 warning in 28.73s`** (100% test pass rate).

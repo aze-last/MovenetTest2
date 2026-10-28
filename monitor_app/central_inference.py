@@ -2,7 +2,7 @@ import threading
 import queue
 import time
 import concurrent.futures
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 from monitor_app.evidence import EvidencePacket
 from monitor_app import profile_store
 from monitor_app.config import get_config
@@ -55,6 +55,23 @@ class CentralInferenceManager:
         # Performance tuning parameters
         self.movenet_skip = 2
         self.yolo_skip = 1
+        self._in_flight_cameras = set()
+        self._in_flight_lock = threading.Lock()
+    def has_in_flight_task(self, camera_id: Any) -> bool:
+        cam_str = str(camera_id)
+        with self._in_flight_lock:
+            return cam_str in self._in_flight_cameras
+
+    def mark_task_in_flight(self, camera_id: Any):
+        cam_str = str(camera_id)
+        with self._in_flight_lock:
+            self._in_flight_cameras.add(cam_str)
+
+    def clear_task_in_flight(self, camera_id: Any):
+        cam_str = str(camera_id)
+        with self._in_flight_lock:
+            self._in_flight_cameras.discard(cam_str)
+
     def has_active_tracks(self, camera_id: str) -> bool:
         with self.lock:
             last_time = self.last_active_track_times.get(str(camera_id), 0.0)
@@ -225,7 +242,7 @@ class CentralInferenceManager:
         # --- PHASE 2 Render: Continuous Box Drawing ---
         # RC-2: draw through the render-dedup helper; merged["detections"] itself is
         # untouched, so the decision path still sees every detection (ghosts included).
-        self._draw_contraband_boxes(merged["frame"], merged["detections"]["contraband"])
+        self._draw_contraband_boxes(merged["frame"], merged["detections"]["contraband"], camera_id=camera_id)
 
         return merged
 
@@ -289,7 +306,7 @@ class CentralInferenceManager:
                 drawable.append(ghost)
         return drawable
 
-    def _draw_contraband_boxes(self, frame, detections):
+    def _draw_contraband_boxes(self, frame, detections, camera_id=None):
         """Single draw helper for contraband boxes (live + power-saving paths).
         Renders clean institutional bounding box with corner brackets and high-contrast pill badge."""
         import cv2
@@ -302,7 +319,19 @@ class CentralInferenceManager:
             track_id = det.get("track_id", -1)
             conf = float(det.get("confidence", 0.0))
             x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
-            alert_color = (0, 0, 255)
+
+            is_dismissed = bool(det.get("dismissed"))
+            if not is_dismissed and camera_id is not None:
+                from monitor_app.decision import get_dismissal_registry
+                is_dismissed = get_dismissal_registry().is_track_dismissed(camera_id, track_id)
+            if is_dismissed:
+                alert_color = (139, 116, 100)  # Muted slate gray BGR
+                text_color = (180, 180, 180)   # Light gray text
+                label_text = f"{name.upper()} #{track_id} [DISMISSED]"
+            else:
+                alert_color = (0, 0, 255)      # Red BGR
+                text_color = (0, 80, 255)       # Orange BGR
+                label_text = f"ALERT: {name.upper()} {int(conf*100)}% (THR: >=30%) ID:{track_id}" if conf > 0 else f"ALERT: {name.upper()} (ID: {track_id})"
 
             # Professional CCTV frame with corner brackets (Anti-Aliased with solid stroke)
             cv2.rectangle(frame, (x1, y1), (x2, y2), alert_color, base_thick, lineType=cv2.LINE_AA)
@@ -316,7 +345,6 @@ class CentralInferenceManager:
             cv2.line(frame, (x2, y2), (x2 - c_len, y2), alert_color, bracket_thick, lineType=cv2.LINE_AA)
             cv2.line(frame, (x2, y2), (x2, y2 - c_len), alert_color, bracket_thick, lineType=cv2.LINE_AA)
 
-            label_text = f"ALERT: {name.upper()} {int(conf*100)}% (THR: >=30%) ID:{track_id}" if conf > 0 else f"ALERT: {name.upper()} (ID: {track_id})"
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.50
             (tw, th), _ = cv2.getTextSize(label_text, font, font_scale, 2)
@@ -333,7 +361,7 @@ class CentralInferenceManager:
 
             cv2.rectangle(frame, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
             cv2.rectangle(frame, (bx1, by1), (bx2, by2), alert_color, base_thick, lineType=cv2.LINE_AA)
-            cv2.putText(frame, label_text, (bx1 + 5, by2 - 5), font, font_scale, (0, 80, 255), 2, lineType=cv2.LINE_AA)
+            cv2.putText(frame, label_text, (bx1 + 5, by2 - 5), font, font_scale, text_color, 2, lineType=cv2.LINE_AA)
 
     def _compute_is_alert(self, packet, p):
         """Raw per-frame alert state for a person: legacy behavior detection (matched by
@@ -687,8 +715,7 @@ class CentralInferenceManager:
                                         
                                         # Re-draw YOLO contraband boxes so they persist
                                         # (RC-2: same render-dedup helper as the live path)
-                                        self._draw_contraband_boxes(
-                                            res["frame"], res["detections"]["contraband"])
+                                        self._draw_contraband_boxes(res["frame"], res["detections"]["contraband"], camera_id=packet.camera_id)
                             else:
                                 # Fallback: BasicMotionEngine or unknown engine type
                                 res = self.engine.process_frame(
@@ -838,6 +865,7 @@ class CentralInferenceManager:
                 if hasattr(task, 'callback') and task.callback:
                     self.callback_executor.submit(task.callback, task.result)
                 task.event.set()
+                self.clear_task_in_flight(packet.camera_id)
                 self.task_queue.task_done()
             except queue.Empty:
                 continue
@@ -849,6 +877,7 @@ class CentralInferenceManager:
         Submit a task to the queue. Enforces bounded size with frame-dropping
         and returns the processed EvidencePacket.
         """
+        self.mark_task_in_flight(packet.camera_id)
         task = InferenceTask(packet)
         
         # Mark queue enter timestamp
@@ -886,6 +915,7 @@ class CentralInferenceManager:
                         })
 
                     dropped_task.event.set()
+                    self.clear_task_in_flight(dropped_task.packet.camera_id)
                     self.task_queue.task_done()
                 except queue.Empty:
                     pass
@@ -904,6 +934,7 @@ class CentralInferenceManager:
             
             from monitor_app.monitor_logging import SystemEvents
             SystemEvents.inference_timeout(packet.camera_id, 3.0)
+        self.clear_task_in_flight(packet.camera_id)
         return task.result
 
     def submit_task_async(self, packet: EvidencePacket, callback: Optional[Callable] = None):
@@ -913,6 +944,7 @@ class CentralInferenceManager:
         
         This prevents camera worker threads from blocking on GPU inference.
         """
+        self.mark_task_in_flight(packet.camera_id)
         task = InferenceTask(packet, callback=callback)
         
         if packet.frame_uuid:
@@ -950,6 +982,7 @@ class CentralInferenceManager:
                         self.callback_executor.submit(dropped_task.callback, dropped_task.result)
                     
                     dropped_task.event.set()
+                    self.clear_task_in_flight(dropped_task.packet.camera_id)
                     self.task_queue.task_done()
                 except queue.Empty:
                     pass
