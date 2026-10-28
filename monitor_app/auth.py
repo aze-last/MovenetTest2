@@ -394,7 +394,7 @@ class LoginScreen(ctk.CTkFrame):
             return None
         try:
             image = Image.open(logo_path)
-            return ctk.CTkImage(light_image=image, dark_image=image, size=(56, 56))
+            return ctk.CTkImage(light_image=image, dark_image=image, size=(68, 68))
         except Exception:
             return None
 

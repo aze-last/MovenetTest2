@@ -1,6 +1,7 @@
 # CellWatch AI
 ## Coordinator Manifest, Engineering Constitution & Project Context
 
+## STRICTLY USE RTK IN EVERY TOOL USAGE
 ## USE SELF HEALING SKILL EVERY ERROR OR SAME CODE PROBLEM OCCURS FOR TESTING, FIXING OR OPTIMIZATION ITS IN HERE >>> C:\Users\ASUS\PycharmProjects\MovenetTutorial\.agent-team\templates\self-healing.skill
 ## Movenet is running on CPU and YOLO runs GPU
 ## Target Hardware: Windows Laptop with NVIDIA RTX 2050

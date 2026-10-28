@@ -102,11 +102,15 @@ class CameraFusion:
         if not decision_engine.evaluate_trigger(packet):
             return False
 
+        import re
         evt_type, conf_scores = decision_engine.get_event_details(packet)
         severity = decision_engine.get_severity(packet)
         zone_id = self.resolve_zone(packet.camera_id)
         current_time = float(packet.timestamp) if packet.timestamp else time.time()
-        event_key = (zone_id, evt_type)
+        
+        # Canonicalize event type (strip dynamic percentage/speed) for zone deduplication
+        canonical_type = re.sub(r'\s*\([^)]*\)', '', evt_type).strip() or evt_type
+        event_key = (zone_id, canonical_type)
 
         with self.lock:
             self._prune_expired_events(current_time)
@@ -115,33 +119,49 @@ class CameraFusion:
             if active_event is not None:
                 elapsed = current_time - float(active_event.get("last_seen_time", 0.0))
                 if elapsed <= self.zone_dedup_window_s:
-                    # Corroborating evidence in the same zone within sliding window
                     active_event["last_seen_time"] = current_time
                     cam_id_str = str(packet.camera_id)
-                    if cam_id_str not in active_event["corroborating_cameras"]:
-                        active_event["corroborating_cameras"].append(cam_id_str)
-                        logger.info(
-                            f"Cross-camera alert corroborated: cam={cam_id_str} in zone={zone_id} "
-                            f"for event={evt_type} (initial cam={active_event['initial_camera_id']})"
-                        )
-                    # Suppress duplicate DECISION_TRIGGER to prevent alarm storm
-                    return False
+                    if cam_id_str != active_event.get("initial_camera_id"):
+                        # Secondary camera in same zone: corroborate without duplicate alarm storm
+                        if cam_id_str not in active_event["corroborating_cameras"]:
+                            active_event["corroborating_cameras"].append(cam_id_str)
+                            logger.info(
+                                f"Cross-camera alert corroborated: cam={cam_id_str} in zone={zone_id} "
+                                f"for event={canonical_type} (initial cam={active_event['initial_camera_id']})"
+                            )
+                            # Publish multi-camera corroborating evidence
+                            get_event_bus().publish(
+                                "EVIDENCE_ADDED",
+                                camera_id=active_event["initial_camera_id"],
+                                incident_id="",
+                                event_type=f"Cross-Camera Corroboration (Cam {cam_id_str})",
+                                confidence_scores=conf_scores,
+                                severity=severity
+                            )
+                        return False
+                    else:
+                        # Primary detecting camera: update metadata and continue to emit DECISION_TRIGGER
+                        active_event["confidence_scores"] = conf_scores
+                        active_event["severity"] = severity
+                        active_event["event_type"] = evt_type
 
-            # First detection in this zone or window expired: open new zone incident
-            self.active_zone_events[event_key] = {
-                "zone_id": zone_id,
-                "event_type": evt_type,
-                "initial_camera_id": str(packet.camera_id),
-                "corroborating_cameras": [str(packet.camera_id)],
-                "start_time": current_time,
-                "last_seen_time": current_time,
-                "severity": severity,
-                "confidence_scores": conf_scores,
-            }
-            logger.info(
-                f"Zone incident initiated: zone={zone_id} cam={packet.camera_id} "
-                f"event={evt_type} severity={severity}"
-            )
+            if active_event is None:
+                # First detection in this zone or window expired: open new zone incident
+                self.active_zone_events[event_key] = {
+                    "zone_id": zone_id,
+                    "event_type": evt_type,
+                    "canonical_type": canonical_type,
+                    "initial_camera_id": str(packet.camera_id),
+                    "corroborating_cameras": [str(packet.camera_id)],
+                    "start_time": current_time,
+                    "last_seen_time": current_time,
+                    "severity": severity,
+                    "confidence_scores": conf_scores,
+                }
+                logger.info(
+                    f"Zone incident initiated: zone={zone_id} cam={packet.camera_id} "
+                    f"event={evt_type} severity={severity}"
+                )
 
         # Publish DECISION_TRIGGER outside the lock
         get_event_bus().publish(

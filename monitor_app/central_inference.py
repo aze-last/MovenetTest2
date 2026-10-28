@@ -104,6 +104,13 @@ class CentralInferenceManager:
             self.worker_thread.join(timeout=1.0)
             self.worker_thread = None
             
+        # Drain any leftover tasks
+        while not self.task_queue.empty():
+            try:
+                self.task_queue.get_nowait()
+            except queue.Empty:
+                break
+
         # Stop performance monitor
         from monitor_app.monitor_logging import get_performance_monitor
         get_performance_monitor().stop()

@@ -30,6 +30,9 @@ OutputBaseFilename=CellWatch-Setup-{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+WizardImageFile=wizard_banner.bmp
+WizardSmallImageFile=wizard_small.bmp
+SetupIconFile=..\monitor_app\assets\app_icon.ico
 DisableWelcomePage=no
 ExtraDiskSpaceRequired=2147483648
 CloseApplications=force
@@ -49,9 +52,9 @@ Source: "..\dist\CellWatch\*"; DestDir: "{app}"; Flags: ignoreversion recursesub
 Source: "redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: NeedsVCRedist
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\{#MyAppExeName}" 
 
 [Run]
 ; Install VC++ Redistributable if needed before launching app

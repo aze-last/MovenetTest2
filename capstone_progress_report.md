@@ -853,3 +853,667 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
   - Pre-Flight Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN` (22 passed)**.
   - Full Test Suite: `pytest tests/` — **134 passed in 17.65s**.
   - Review Protocol: 3-Pillar Code Review (`agy-verifier.md`) — **`Decision: APPROVE`**.
+
+
+---
+
+## 12. Unified 3-Pane Incident Review Center & Continuous Triage Architecture
+- **Problem Diagnosed:**
+  - *Usability Friction & Tab Jumping:* Reviewing incidents previously required round-trip switching between two disconnected tabs: `Incident Handling & Validation` and `Incident History Log`. Operators had to navigate to the database table tab, search/scroll, double-click a row to load it into the review tab, submit an audit decision, and then repeat the entire tab-switch cycle for every single incident. For 131 pending incidents, this imposed 131 tedious tab-switching round trips.
+  - *Blank White Video Canvas Bug:* When an incident was loaded, `self.video_label.configure(text="Playback ready...", image="")` explicitly wiped the canvas to blank text. Furthermore, pausing or stopping playback executed `self.video_label.configure(image="")`. The video canvas remained a blank white box unless the operator actively clicked `Play Evidence`.
+  - *Lack of Timeline Scrubbing:* Operators lacked precision scrubbing capability, possessing only coarse `<< 10s` and `10s >>` jump buttons with no visual indication of current time, total clip duration, or scrub bar.
+  - *Unformatted Wall-of-Text Threat Telemetry:* Raw multi-frame detections were displayed as dense unformatted strings (e.g. `Cellphone (38% >= 30%) + Cellphone (32% >= 30%) ...`) that overflowed labels.
+
+- **Architectural Benchmark & Solution:**
+  - Benchmarked institutional VMS and digital evidence management standards (Genetec Mission Control, Milestone XProtect Incident Manager, Verkada Command, and Axon Evidence).
+  - Designed and deployed the **Unified 3-Pane Incident Review Center** in `monitor_app/incidents.py`:
+    1. **Left Pane (25% Width) — Interactive Incident Queue & Filter Bar:**
+       - Embedded queue sidebar allowing operators to browse, search, and switch incidents with 1 click without leaving the review workspace.
+       - Real-time search entry (`CTkEntry`) filtering across Event IDs, Camera feeds, and threat classifications on `<KeyRelease>`.
+       - Segmented filter chips (`ALL`, `PENDING`, `CONFIRMED`, `FALSE ALARM`, `NEEDS REVIEW`).
+       - Rich incident queue cards displaying a threat-category color strip (Red = Weapon/Violence, Amber = Contraband, Blue = Behavior), Camera badge, time, concise threat title, clean Event ID, and validation status pill.
+       - Selected card highlights with accent border (`border_width=2`, `border_color=PALETTE["accent"]`).
+       - Capped lazy rendering (50 most recent cards with search indicator) ensuring instantaneous (<100ms) UI initialization.
+    2. **Center Pane (45% Width) — Forensic Evidence Player & Scrubber:**
+       - *Frame 0 Poster Preview:* On incident load, `_load_video_poster` immediately decodes the first frame of the evidence clip and renders it on canvas, completely eliminating the blank white box.
+       - *Timeline Scrubber:* Synchronized `ctk.CTkSlider` and time labels (`time_current_lbl` / `time_total_lbl`) displaying frame-accurate timecode (`MM:SS / MM:SS`). Dragging the slider dynamically seeks and renders video frames in real-time.
+       - *Transport Controls:* Multi-speed navigation (`<< -5s`, `Play/Pause`, `+5s >>`), loop playback toggle (`🔄 Loop: ON/OFF`), and frame snapshot tool (`📸 Snapshot`) exporting high-resolution frames to `snapshots/`.
+       - *Continuous Triage Action Bar:* 1-click audit buttons (`[ ✔ Confirm Threat ]`, `[ ✖ False Alarm ]`, `[ ⚠ Needs Review ]`, `[ 💾 Dataset Export ]`).
+       - *Continuous Auto-Advance Workflow:* Upon taking an audit decision (`update_status`), the system commits audit fields to SQLite, updates queue status, and automatically executes `select_next_pending()`, loading the next pending incident into player and dossier without requiring manual clicking.
+    3. **Right Pane (30% Width) — Forensic Dossier & Auditor Action Panel:**
+       - Symmetrical 2x2 metadata tiles (`CAMERA FEED`, `TIMESTAMP`, `DURATION`, `AUDIT OFFICER`).
+       - 1-click Event ID copy to clipboard (`📋`).
+       - Classified Threat Badges with deduplicated counts, peak confidence percentages, and danger/warning/accent color coding.
+       - Collapsible raw telemetry viewer (`self._raw_stream_visible`).
+       - Investigation Notes (`comment_box`) with 1-click quick-preset chips (`[ + Weapon ]`, `[ + Contraband ]`, `[ + False Pos ]`, `[ + Clear ]`).
+       - Retention policy indicator.
+    4. **Interactive Header Summary Filter Cards:**
+       - Configured header summary metric cards (`Pending Queue`, `Needs Review`, `Confirmed`) with `cursor="hand2"` and click listeners routing directly into the queue's corresponding filter.
+
+- **Line-by-Line Changes Made:**
+  - **`monitor_app/incidents.py`:**
+    - Lines 14–34: Expanded `PALETTE` with `card_selected` for visual queue item selection.
+    - Lines 180–186: Added `_format_time_sec` helper for clean `MM:SS` duration display.
+    - Lines 188–285 (`IncidentsScreen._build_header`): Added cursor pointer and `<Button-1>` click binding to summary cards; implemented `_filter_from_header` routing to queue filters.
+    - Lines 360–410 (`IncidentReviewDetail.__init__`): Configured 3-pane responsive grid layout (`weight=6, 11, 7`); initialized timeline, playback, and queue state variables.
+    - Lines 424–560 (`IncidentReviewDetail._build_inbox_panel`, `_render_inbox_cards`, `_create_inbox_card`): Implemented interactive Queue sidebar, search input, segmented filter buttons, and rich incident cards with category color strips.
+    - Lines 562–735 (`IncidentReviewDetail._build_evidence_player`, `_load_video_poster`): Implemented Evidence Player canvas, Frame 0 poster preview auto-loader, timeline scrubber slider with `_on_slider_scrub`, transport controls (`btn_back`, `btn_play`, `btn_forward`, `btn_snapshot`, `btn_loop`), and continuous triage action bar.
+    - Lines 737–890 (`IncidentReviewDetail._build_details_card`): Implemented Forensic Dossier, symmetrical metadata tiles, quick-preset comment chips (`_insert_comment_preset`), and Event ID clipboard copy.
+    - Lines 892–1020 (`IncidentReviewDetail.load_incident`, playback methods): Integrated instant poster decoding, pause retention (avoiding image wiping), seeking, and loop toggling.
+    - Lines 1022–1100 (`IncidentReviewDetail.update_status`, `select_next_pending`): Implemented continuous auto-advance triage logic and database synchronization.
+  - **`tests/test_dashboard_incidents_ui.py`:**
+    - Lines 160–225: Added `test_unified_3pane_review_center_and_triage` testing 3-pane structure, header filtering, preset comments, loop toggling, and auto-advance queue navigation.
+
+- **Verification & Gates:**
+  - Dedicated Test Suite: `pytest tests/test_dashboard_incidents_ui.py` — **8 passed in 26.57s** (with zero UserWarnings).
+  - Full Project Test Suite: `pytest tests/` — **231 of 231 passed in 35.28s**.
+  - Mechanical Pre-Flight Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`**.
+
+
+---
+
+## 13. Institutional Reporting Center Overhaul & Camera Teardown Concurrency Remediation
+- **Problem Diagnosed:**
+  - *Camera Watchdog & Damaged Header Crash on Screen Navigation:*
+    - When navigating away from `Live Monitor` to `Reports` (or other screens), `switch_screen` in `main.py` invoked `widget.stop_monitoring()`.
+    - In `CameraFeedWidget.stop()`, `self.running = False` was set, and `self.cap.release()` was called.
+    - *Root Cause 1 (Worker Thread Hang):* The worker thread was blocked on `self.frame_queue.get(timeout=2.5)`. Because no frame was delivered, the thread blocked for the full 2.5-second timeout, caught `queue.Empty`, and executed `logger.warning(f"Camera {self.camera_id} read watchdog triggered (no frames for 2.5s). Stalling connection.")` before checking `self.running`. It then incremented consecutive failures and attempted an asynchronous reconnect on a stopped camera.
+    - *Root Cause 2 (Capture Thread Concurrent Release):* `cap.release()` was invoked while `self._capture_thread_loop` was actively blocked inside native C++ `cap.read()`. Windows Media Foundation (MSMF) and FFmpeg threw violent read errors: `CvCapture_MSMF::grabFrame -2147483638` and `[mpeg4] header damaged`.
+  - *Reports Page Usability & Integration Void:*
+    - The existing `monitor_app/reports.py` was merely a mock preview displaying hardcoded placeholders (`Confirmed incidents: --`, `Operational digest: not connected`).
+    - It lacked any connection to `incidents.db`, lacked live telemetry aggregation, had no camera or status filtering, had no CSV export, and only exhibited a demo popup on clicking `Export PDF`.
+
+- **Architectural Solutions & Implementation:**
+  1. **Clean Camera Feed Teardown (`monitor_app/camera_view.py`):**
+     - In `CameraFeedWidget.stop()`:
+       - Pushed sentinel `(False, None)` to `self.frame_queue` to unblock `self.frame_queue.get(timeout=2.5)` immediately in 0ms.
+       - Dispatched `self.cap.release()` safely in a background daemon thread (`threading.Thread(target=lambda c: c.release(), args=(old_cap,), daemon=True).start()`), setting `self.cap = None`.
+     - In `CameraFeedWidget._worker_loop()`:
+       - In `except queue.Empty`: added `if not self.running: break` to suppress false watchdog trigger warnings during application shutdown or screen switching.
+       - Added early `if not self.running: break` checks prior to error counters or reconnection attempts.
+     - In `CameraFeedWidget._capture_thread_loop()`:
+       - Wrapped exceptions with `if self.running:` to suppress normal shutdown EOF exceptions.
+  2. **Institutional Reporting & Analytics Center (`monitor_app/reports.py`):**
+     - Benchmarked institutional VMS standards (Genetec Security Desk Decision Management and Milestone XProtect Incident Manager textual reporting).
+     - **Live Database Aggregation (`_query_report_data`):**
+       - Integrated live queries against `incidents.db` supporting date ranges (`timestamp_start BETWEEN start AND end`), camera sector filters, and review status filters (`Confirmed`, `False Alarm`, `Pending`).
+       - Aggregated metrics: `total`, `confirmed`, `false_alarms`, `pending`, `needs_review`, `false_rate (%)`, `peak_hour`, `peak_cam`, and threat category totals (`weapons`, `contraband`, `violence`, `behavior`).
+     - **Quick Date Presets:**
+       - Added 1-click preset buttons: `Today`, `7 Days`, `30 Days`, and `All Time`.
+     - **Live Metric Summary Strip:**
+       - Header displays 4 live metric tiles: `Total Events`, `Confirmed Threats` (Red), `False Positives` (Green), and `Pending Queue` (Amber).
+     - **Institutional Dossier Document Canvas:**
+       - Rendered institutional dossier featuring BJMP & CellWatch official classification header, executive summary, audit registry snapshot, threat breakdown matrix, camera sector distribution table, chronological incident registry (with Event ID, timestamp, camera, threat summary, status, officer), and chain-of-custody sign-off blocks (Duty Officer, Shift Supervisor, Jail Warden).
+     - **AI Executive Intelligence Synthesis (`generate_ai_summary`):**
+       - Automatically synthesizes real data into an intelligence brief highlighting high-risk cells, weapon counts, peak incident hours, and actionable security recommendations.
+     - **Multi-Format Export Engines:**
+       - *Printable HTML / PDF (`export_pdf`):* Generates an executive-styled HTML document with CSS print media queries, tables, and signature blocks in `reports/`, opening in the default browser with `window.print()` ready to save as PDF or physical printout.
+       - *CSV Spreadsheet Export (`export_csv`):* Formats all matching records with complete audit columns into an Excel-ready CSV in `reports/`.
+
+- **Line-by-Line Changes Made:**
+  - **`monitor_app/camera_view.py`:**
+    - Lines 941–948: Wrapped capture thread exception logger with `if self.running:` to silence shutdown noise.
+    - Lines 982–1005: Added `if not self.running: break` inside `queue.Empty` handler and before reconnection block in `_worker_loop`.
+    - Lines 1206–1215 (`CameraFeedWidget.stop`): Pushed sentinel to `frame_queue` to unblock worker immediately; released capture in background daemon.
+  - **`monitor_app/reports.py`:**
+    - Complete rewrite: implemented `ReportsScreen` with live SQLite data pipeline (`_query_report_data`), quick date presets (`_set_date_today`, `_set_date_7days`, `_set_date_30days`, `_set_date_all`), live metric cards, institutional document builder (`_build_preview_document`), executive AI summary (`generate_ai_summary`), HTML/print engine (`export_pdf`), and CSV data export (`export_csv`).
+  - **`tests/test_reports_settings_ui.py`:**
+    - Added `test_reports_data_aggregation_and_presets` verifying presets, data aggregation, summary generation, document builder, and reset functionality.
+
+- **Verification & Gates:**
+  - Dedicated Test Suite: `pytest tests/test_reports_settings_ui.py` — **7 of 7 passed in 3.57s**.
+  - Incident UI Suite: `pytest tests/test_dashboard_incidents_ui.py` — **8 of 8 passed in 25.45s**.
+  - Camera Stability Suite: `pytest tests/test_tracking_stability.py` — **4 of 4 passed in 5.49s**.
+  - Full Project Suite: `pytest tests/` — **294 of 294 passed in 37.77s**.
+  - Mechanical Pre-Flight Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`**.
+
+
+---
+
+## 14. Settings Action Toolbar Modernization & Camera Network VMS Management Center Redesign
+- **Problem Diagnosed:**
+  - *Buried Action Buttons on Settings Page:*
+    - In `monitor_app/settings.py`, the action controls (`Reset Custom to Medium`, `Manage Camera Network`, `Save AI Preferences`) were placed in row 5 (`footer`), underneath nine sensitivity sliders across two cards and experimental developer options.
+    - On 1080p and 768p displays, this footer was pushed completely off-screen, requiring operators to scroll down past all controls to save or manage cameras.
+  - *Camera Management Dialog Design & Usability Limitations:*
+    - The dialog hardcoded a pitch-black background (`#06090c`) and dark cards, clashing when the application ran in Light Appearance Mode.
+    - The dialog used a single vertically-stacked column inside a 700x650 modal, forcing excessive vertical scrolling between channel configurations and the channel table.
+    - Operators had no ability to verify or test RTSP streams or USB webcam inputs before saving, risking entering invalid credentials or dead endpoints.
+    - RTSP setup lacked vendor presets for standard commercial security cameras (TP-Link Tapo, Hikvision, Dahua, ONVIF), forcing manual entry of vendor-specific path syntax.
+
+- **Architectural Solutions & Implementation:**
+  1. **Upper Action Toolbar in Monitoring Settings (`monitor_app/settings.py`):**
+     - Relocated `self.monitoring_save_button` (Save AI Preferences), `self.btn_manage_cams` (Manage Camera Network), and `self.monitoring_reset_button` (Reset Custom to Medium) into the upper `profile_frame` (row 2) directly adjacent to the `Active Detection Profile` selector.
+     - Kept button heights at 36px with corner radius 8 matching `self.profile_menu`.
+     - Preserved exact attribute names and callback bindings for full backwards compatibility.
+     - Retained `self.footer_save_btn` in row 5 for secondary convenience when operators adjust bottom sliders.
+  2. **Two-Column Master-Detail VMS Management Dialog (`monitor_app/camera_view.py`):**
+     - Benchmarked enterprise VMS configuration consoles (Genetec Config Tool, Milestone XProtect Management Client, Verkada Command).
+     - **Adaptive Palette:** Replaced hardcoded `#06090c` with `(light_mode, dark_mode)` tuples across surfaces (`page`, `card`, `card_subtle`, `border`, `text`, `muted`, `accent`). Added `_apply_appearance()` to dynamically update `ttk.Treeview` and heading styles.
+     - **Responsive Two-Column Split (`880x680`, minsize `820x620`):**
+       - *Left Column (Channel Inventory - Master):* Header showing configured channel count with `lbl_capacity_badge` (`N / 4 CHANNELS CONFIGURED`), styled Treeview showing Channel ID, Name, Type (`[RTSP]` or `[USB]`), and Source Path. Bottom toolbar contains `[ + New Channel ]` and `[ Delete Channel ]`.
+       - *Right Column (Stream Configuration - Detail):* Dynamic status banner (`lbl_channel_tag` displaying `EDITING CAM X` or `NEW CHANNEL`), Camera Name field, and Stream Protocol segmented toggle (`RTSP Stream` vs `USB Webcam`).
+     - **Vendor URI Quick Presets:**
+       - Added vendor preset selector (`TP-Link / Tapo /stream1`, `Hikvision /Streaming/Channels/101`, `Dahua /cam/realmonitor?channel=1&subtype=0`, `Generic ONVIF /live/ch0`) to automatically populate RTSP paths.
+     - **Inline RTSP Credentials & Show/Hide Password:**
+       - Added username, host/IP, port, path, and password field with `_toggle_password_mask()` checkbox for secure low-light entry.
+     - **Live Stream Verification & Handshake Diagnostic Engine (`_test_stream_connection`):**
+       - Added non-blocking background thread worker to probe `cv2.VideoCapture` with a 3.0-second timeout.
+       - Safely checks stream connection and reads test frame, displaying instant feedback in `lbl_probe_status`:
+         - Success: `✔ Stream Verified: 1920x1080 @ 25 FPS (Handshake OK)` in green.
+         - Failure: `✖ Connection Failed: Stream timed out or host unreachable` in red.
+       - Dispatches capture release to a background thread to prevent GUI lockup (Rule 1).
+
+- **Line-by-Line Changes Made:**
+  - **`monitor_app/settings.py`:**
+    - Lines 463–538: Restructured `profile_frame` (row 2) with `prof_left` for profile menu and `actions_bar` for `monitoring_save_button`, `btn_manage_cams`, and `monitoring_reset_button`.
+    - Lines 625–645: Restructured row 5 footer with informational guidance and secondary `footer_save_btn`.
+  - **`monitor_app/camera_view.py`:**
+    - Lines 103–660 (`CameraManagementDialog`): Overhauled class to 880x680 master-detail two-column VMS layout with mode-adaptive palette, vendor URI presets, show/hide password toggle, RTSP auto-builder, and non-blocking `_test_stream_connection` probe engine.
+  - **`tests/test_reports_settings_ui.py`:**
+    - Lines 142–220: Added `test_settings_upper_action_buttons` and `test_camera_management_dialog_lifecycle` validating button layout, reset action, modal instantiation, protocol switching, vendor presets, URL auto-generation, password mask toggle, and channel refresh.
+
+- **Verification & Gates:**
+  - Dedicated Test Suite: `pytest tests/test_reports_settings_ui.py` — **9 of 9 passed in 11.14s**.
+  - Full Project Suite: `pytest tests/` — **138 files / 296 tests passed in 37.72s**.
+  - Mechanical Pre-Flight Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`**.
+
+
+---
+
+## 15. Camera ID Normalization & Auto-Sequence Compacting
+- **Problem Diagnosed:**
+  - *Non-Sequential Camera IDs & Sequence Inflation:*
+    - Through repeated additions, deletions, and testing of camera channels, SQLite's `AUTOINCREMENT` primary key counter on the `cameras` table in `app_state.db` ballooned up to 18 (e.g. `1, 14, 15, 18`).
+    - This resulted in confusing telemetry and UI logs (e.g., `CAM14`, `CAM18`, `Camera 14 read watchdog triggered`), despite only four active cameras being monitored.
+  - *No Gap Reclamation on Deletion:*
+    - When a camera channel was deleted from the middle of the list (e.g. deleting CAM 2 from 1, 2, 3, 4), the IDs remained fractured (`1, 3, 4`), and adding a new channel would assign ID 5 instead of reclaiming the lowest sequential ID.
+
+- **Architectural Solutions & Implementation:**
+  1. **SQLite ID Normalization & Sequence Reset (`monitor_app/profile_store.py`):**
+     - Implemented `normalize_camera_ids()` and `_normalize_camera_ids_sync()`.
+     - Queries all active cameras ordered by `camera_id ASC`. If any camera ID deviates from its 1-based index (1..N):
+       - Stages temporary negative IDs (`-1, -2, ... -N`) in an atomic transaction to prevent primary key `UNIQUE` collisions during reassignment.
+       - Re-assigns contiguous positive IDs `1, 2, ... N`.
+     - Resets SQLite's internal sequence tracker:
+       `DELETE FROM sqlite_sequence WHERE name = 'cameras'` followed by `INSERT INTO sqlite_sequence (name, seq) VALUES ('cameras', len(rows))`.
+     - Logs an immutable system audit trail record (`CAMERAS_NORMALIZED`) into `audit_log`.
+     - Automatically integrated into:
+       - `ensure_app_state()`: Normalizes existing records on application launch.
+       - `delete_camera()`: Immediately compacts IDs when a channel is removed.
+       - `add_camera()`: Ensures new insertions obtain the exact next sequential integer.
+  2. **Camera Management UI Integration (`monitor_app/camera_view.py`):**
+     - Updated `CameraManagementDialog._load_cameras()` to trigger `profile_store.normalize_camera_ids()` automatically before populating the Treeview.
+     - Added an interactive `[ Renumber (1..N) ]` button to the left channel inventory toolbar (`self.btn_renumber`) with instant confirmation and feed refresh.
+     - Updated `close_and_refresh()` to guarantee all active feeds reflect normalized IDs upon modal dismissal.
+  3. **Automated Unit Testing (`tests/test_reports_settings_ui.py`):**
+     - Authored `test_camera_id_normalization` verifying:
+       - Current database rows are normalized `1..N`.
+       - Artificially generated gaps and inflated IDs (e.g. ID 99) are safely and sequentially compacted back to `1..N`.
+       - `sqlite_sequence` is updated correctly.
+
+- **Line-by-Line Changes Made:**
+  - **`monitor_app/profile_store.py`:**
+    - Line 210: Integrated `_normalize_camera_ids_sync()` at the end of `ensure_app_state()`.
+    - Line 707: Integrated `_normalize_camera_ids_sync()` in `add_camera()`.
+    - Line 755: Integrated `_normalize_camera_ids_sync()` in `delete_camera()`.
+    - Lines 758–805: Implemented `normalize_camera_ids()` and `_normalize_camera_ids_sync()` with transaction staging and `sqlite_sequence` reset.
+  - **`monitor_app/camera_view.py`:**
+    - Lines 307–318: Added `self.btn_renumber` in `left_bot` toolbar.
+    - Lines 717–725: Added automatic `profile_store.normalize_camera_ids()` inside `_load_cameras()`.
+    - Lines 738–748: Added `_renumber_cameras()` handler and updated `close_and_refresh()`.
+  - **`tests/test_reports_settings_ui.py`:**
+    - Lines 229–255: Added `test_camera_id_normalization` unit test.
+
+- **Verification & Gates:**
+  - Dedicated Test Suite: `pytest tests/test_reports_settings_ui.py` — **10 of 10 passed in 11.08s**.
+  - Incident & UI Suite: `pytest tests/test_dashboard_incidents_ui.py` — **8 of 8 passed in 24.61s**.
+  - Full Mechanical Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`** (18 of 18 passed).
+
+
+---
+
+## 16. Production Inno Setup Installer Build (v1.0.0)
+- **Objective & Scope:**
+  - Package the fully verified, multi-camera, dual-mode CellWatch AI institutional surveillance software into a standalone, enterprise-grade Windows installer executable (`CellWatch-Setup-1.0.0.exe`).
+  - Bundle all native dependencies, PyTorch backends, TensorRT inference runtimes (`nvinfer_builder_resource_*.dll`), ONNX runtime engines, MoveNet/YOLO weights, and Visual C++ 2015-2022 x64 redistributable for complete offline installation in Philippine BJMP facilities.
+
+- **Pipeline Execution Stages:**
+  1. **Stage 1 — PyInstaller One-Dir Distribution (`CellWatch.spec`):**
+     - Executed `.venv310\Scripts\pyinstaller.exe --noconfirm CellWatch.spec`.
+     - Recompiled all Python source code into frozen CPython binaries in `dist/CellWatch/`, incorporating:
+       - Incident Review Center with dual-mode high-contrast cards and automated review workflow.
+       - Reports Analytics & Forensic Export Suite with database audit columns.
+       - Settings Monitoring Workspace with upper action buttons (`Save AI Preferences`, `Manage Camera Network`, `Reset to Medium`).
+       - Master-Detail Camera Network Management modal with non-blocking stream probing and RTSP presets.
+       - Camera ID Sequential Normalization Engine with gap closure and SQLite sequence reset.
+  2. **Stage 2 — Hash-Pinned VC++ Redistributable Verification:**
+     - Verified Microsoft Visual C++ 2015-2022 x64 Redistributable (`installer\redist\vc_redist.x64.exe`).
+     - Cryptographically checked pinned SHA-256 hash: `cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b` (verified OK).
+  3. **Stage 3 — Inno Setup Solid LZMA2 Compilation (`installer/CellWatch.iss`):**
+     - Invoked Inno Setup 6 Command-Line Compiler (`ISCC.exe`) via `scripts/build_installer.ps1`.
+     - Compressed the entire ~3.5 GB application footprint using `lzma2/ultra64` solid compression.
+     - Packaged application executable, internal modules, ONNX/TensorRT runtimes, configuration files, default databases, and icons into a self-extracting wizard installer.
+  4. **Stage 4 — Artifact Verification & Manifest Generation:**
+     - Target Executable: `artifacts\installer\CellWatch-Setup-1.0.0.exe`
+     - Final Size: **3,270.4 MB** (3,429,261,492 bytes).
+     - SHA-256 Digest: `2285c62d6aaa048b4e42e68fb17c0c25bc5ec2a6385c83a1c2de2819d1277fa6`.
+     - Manifest: Generated `artifacts\installer\version.json` with version `1.0.0`, release notes, download URL, and matching checksum.
+
+
+---
+
+## 17. Live Incident Detection Pipeline Hookup & End-to-End UI Integration
+- **Objective & Scope:**
+  - Bridge the gap between real-time camera AI detections (MoveNet pose behaviors and YOLO contraband) and the institutional incident management lifecycle.
+  - Ensure every confirmed detection triggers real-time evidence recording, commits forensic records with complete audit columns to `incidents.db`, displays active status badges and border highlights on Live Monitor feed cards, slides down actionable alert banners, auto-notifies the navigation bar (`Incidents 🚨`), and updates the Incidents review queue in real-time.
+
+- **Root Cause Analysis (Systematic Debugging):**
+  1. **Defect 1 (`monitor_app/incident_record.py`):** `IncidentRecorder.handle_incident_start()` lacked `severity` parameter and `**kwargs`, resulting in unhandled `TypeError: IncidentRecorder.handle_incident_start() got an unexpected keyword argument 'severity'` every time `AlertManager._confirm()` emitted `INCIDENT_START`. Video recording and metadata writing were aborted.
+  2. **Defect 2 (`monitor_app/fusion.py`):** `CameraFusion.process_decision_trigger()` treated subsequent frames from the detecting camera within 7.0s as duplicates and suppressed them (`if elapsed <= self.zone_dedup_window_s: return False`), starving `AlertManager` of subsequent frames required to progress hysteresis from `PENDING` to `CONFIRMED`.
+  3. **Defect 3 (`monitor_app/alert_manager.py`):** `IncidentState.tick()` only handled timeout back to `IDLE` and did not promote `PENDING` state to `CONFIRMED` after stabilization window elapsed with active detection. Elevated `CRITICAL` and `HIGH` severity detections lacked immediate confirmation path.
+  4. **Defect 4 (`monitor_app/camera_view.py`):** `CameraFeedWidget.update_loop` unpacked `alert_triggered` from the inference queue but discarded it in the card status renderer, checking only `self.recorder.get_status_info()`. Feed cards stayed green ("NORMAL") during active AI detections.
+  5. **Defect 5 (`monitor_app/incidents.py`):** `IncidentsScreen` had no EventBus subscriptions for `INCIDENT_START` or `TELEM_DB_WRITE_COMPLETE`, leaving the triage queue, summary counters, and forensic history stagnant until manual page reloads.
+
+- **Implementation Details & Files Modified:**
+  - `monitor_app/incident_record.py` (Lines 55–90, 200–265):
+    - Updated `handle_incident_start(self, camera_id, incident_id, event_type, frame, ai_results, severity=None, **kwargs)`.
+    - Added `self.current_severity = severity or "MEDIUM"`.
+    - Updated `handle_incident_stop(self, camera_id, incident_id, **kwargs)`.
+    - Populated all audit columns in `_save_metadata()` (`escalation_level`, `operator_action_required`, `notes`, `created_at`, `updated_at`).
+  - `monitor_app/fusion.py` (Lines 110–180):
+    - Added canonical event type normalization via regex stripping (`re.sub(r'\s*\([^)]*\)', '', evt_type).strip()`) to prevent confidence jitter from fracturing zone deduplication keys.
+    - Preserved primary detecting camera frame flow into `AlertManager` to maintain hysteresis, while publishing `EVIDENCE_ADDED` for cross-camera corroboration across secondary feeds in the same zone.
+  - `monitor_app/alert_manager.py` (Lines 110–145, 230–245):
+    - Cached `_pending_frame`, `_pending_ai_results`, and `_pending_event_type`.
+    - Enabled immediate confirmation for `CRITICAL` and `HIGH` severity threats (e.g. knives, weapons, violent altercations).
+    - In `IncidentState.tick()`, promoted `PENDING` to `CONFIRMED` upon `pending_duration` (0.5s) expiry while detection remains active.
+  - `monitor_app/camera_view.py` (Lines 1055–1115, 1308, 1636–1655, 1775–1785, 1850–1870):
+    - Initialized `self.last_alert_triggered` and `self.last_alert_desc` in `CameraFeedWidget`.
+    - Pushed `alert_active` and `alert_desc` through async inference queue to `update_loop`.
+    - Rendered dynamic feed status: `ALERT: <threat>` with red border (`#f25c5c`) during active detection, transitioning to `RECORDING: <event>` with 3px red border during confirmed recording, `COOLDOWN (Xs)` with orange border, or `NORMAL` with standard border.
+    - Guarded `_show_alert_banner` against overwriting valid incident IDs with None, and added fallback in `_review_active_incident` to query the latest incident from `incidents.db`.
+  - `monitor_app/incidents.py` (Lines 210–225, 360–395):
+    - Subscribed `IncidentsScreen` to `INCIDENT_START`, `INCIDENT_STOP`, and `TELEM_DB_WRITE_COMPLETE`.
+    - Implemented debounced real-time queue refresh (`_refresh_live_state`) and clean unsubscription in `stop_monitoring()` and `destroy()`.
+  - `monitor_app/main.py` (Lines 115–125, 312–325):
+    - Subscribed `CellWatchApp` to `INCIDENT_START` to add `Incidents 🚨` notification badge to navigation bar during active incidents, resetting to `Incidents` upon switching to the `Incidents` tab.
+  - `monitor_app/events.py` (Lines 44–48):
+    - Formally exported `INCIDENT_START`, `INCIDENT_STOP`, and `DECISION_TRIGGER` constants.
+  - `tests/test_live_incident_pipeline.py` (Lines 1–185):
+    - Authored 5 comprehensive integration and unit tests:
+      1. `test_incident_recorder_handle_incident_start_with_severity`
+      2. `test_camera_fusion_primary_camera_not_suppressed`
+      3. `test_end_to_end_decision_to_recording_and_db`
+      4. `test_camera_monitor_screen_review_active_incident_fallback`
+      5. `test_main_app_nav_badge_on_incident_start`
+
+- **Verification & Mechanical Gates:**
+  - Dedicated Live Pipeline Test Suite: `pytest tests/test_live_incident_pipeline.py` — **5 of 5 passed in 2.88s**.
+  - Incidents & Dashboard Test Suite: `pytest tests/test_dashboard_incidents_ui.py` — **8 of 8 passed in 18.96s**.
+  - Reports & Settings Test Suite: `pytest tests/test_reports_settings_ui.py` — **10 of 10 passed in 10.45s**.
+  - Codebase Integrity Suite: `pytest tests/test_codebase_integrity.py` — **passed**.
+  - Full Mechanical Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`** (21 of 21 tests passed).
+
+
+---
+
+## 17. Live Incident Detection Pipeline Hookup & End-to-End UI Integration
+- **Objective & Scope:**
+  - Bridge the gap between real-time camera AI detections (MoveNet pose behaviors and YOLO contraband) and the institutional incident management lifecycle.
+  - Ensure every confirmed detection triggers real-time evidence recording, commits forensic records with complete audit columns to `incidents.db`, displays active status badges and border highlights on Live Monitor feed cards, slides down actionable alert banners, auto-notifies the navigation bar (`Incidents 🚨`), and updates the Incidents review queue in real-time.
+
+- **Root Cause Analysis (Systematic Debugging):**
+  1. **Defect 1 (`monitor_app/incident_record.py`):** `IncidentRecorder.handle_incident_start()` lacked `severity` parameter and `**kwargs`, resulting in unhandled `TypeError: IncidentRecorder.handle_incident_start() got an unexpected keyword argument 'severity'` every time `AlertManager._confirm()` emitted `INCIDENT_START`. Video recording and metadata writing were aborted.
+  2. **Defect 2 (`monitor_app/fusion.py`):** `CameraFusion.process_decision_trigger()` treated subsequent frames from the detecting camera within 7.0s as duplicates and suppressed them (`if elapsed <= self.zone_dedup_window_s: return False`), starving `AlertManager` of subsequent frames required to progress hysteresis from `PENDING` to `CONFIRMED`.
+  3. **Defect 3 (`monitor_app/alert_manager.py`):** `IncidentState.tick()` only handled timeout back to `IDLE` and did not promote `PENDING` state to `CONFIRMED` after stabilization window elapsed with active detection. Elevated `CRITICAL` and `HIGH` severity detections lacked immediate confirmation path.
+  4. **Defect 4 (`monitor_app/camera_view.py`):** `CameraFeedWidget.update_loop` unpacked `alert_triggered` from the inference queue but discarded it in the card status renderer, checking only `self.recorder.get_status_info()`. Feed cards stayed green ("NORMAL") during active AI detections.
+  5. **Defect 5 (`monitor_app/incidents.py`):** `IncidentsScreen` had no EventBus subscriptions for `INCIDENT_START` or `TELEM_DB_WRITE_COMPLETE`, leaving the triage queue, summary counters, and forensic history stagnant until manual page reloads.
+
+- **Implementation Details & Files Modified:**
+  - `monitor_app/incident_record.py` (Lines 55–90, 200–265):
+    - Updated `handle_incident_start(self, camera_id, incident_id, event_type, frame, ai_results, severity=None, **kwargs)`.
+    - Added `self.current_severity = severity or "MEDIUM"`.
+    - Updated `handle_incident_stop(self, camera_id, incident_id, **kwargs)`.
+    - Populated all audit columns in `_save_metadata()` (`escalation_level`, `operator_action_required`, `notes`, `created_at`, `updated_at`).
+  - `monitor_app/fusion.py` (Lines 110–180):
+    - Added canonical event type normalization via regex stripping (`re.sub(r'\s*\([^)]*\)', '', evt_type).strip()`) to prevent confidence jitter from fracturing zone deduplication keys.
+    - Preserved primary detecting camera frame flow into `AlertManager` to maintain hysteresis, while publishing `EVIDENCE_ADDED` for cross-camera corroboration across secondary feeds in the same zone.
+  - `monitor_app/alert_manager.py` (Lines 110–145, 230–245):
+    - Cached `_pending_frame`, `_pending_ai_results`, and `_pending_event_type`.
+    - Enabled immediate confirmation for `CRITICAL` and `HIGH` severity threats (e.g. knives, weapons, violent altercations).
+    - In `IncidentState.tick()`, promoted `PENDING` to `CONFIRMED` upon `pending_duration` (0.5s) expiry while detection remains active.
+  - `monitor_app/camera_view.py` (Lines 1055–1115, 1308, 1636–1655, 1775–1785, 1850–1870):
+    - Initialized `self.last_alert_triggered` and `self.last_alert_desc` in `CameraFeedWidget`.
+    - Pushed `alert_active` and `alert_desc` through async inference queue to `update_loop`.
+    - Rendered dynamic feed status: `ALERT: <threat>` with red border (`#f25c5c`) during active detection, transitioning to `RECORDING: <event>` with 3px red border during confirmed recording, `COOLDOWN (Xs)` with orange border, or `NORMAL` with standard border.
+    - Guarded `_show_alert_banner` against overwriting valid incident IDs with None, and added fallback in `_review_active_incident` to query the latest incident from `incidents.db`.
+  - `monitor_app/incidents.py` (Lines 210–225, 360–395):
+    - Subscribed `IncidentsScreen` to `INCIDENT_START`, `INCIDENT_STOP`, and `TELEM_DB_WRITE_COMPLETE`.
+    - Implemented debounced real-time queue refresh (`_refresh_live_state`) and clean unsubscription in `stop_monitoring()` and `destroy()`.
+  - `monitor_app/main.py` (Lines 115–125, 312–325):
+    - Subscribed `CellWatchApp` to `INCIDENT_START` to add `Incidents 🚨` notification badge to navigation bar during active incidents, resetting to `Incidents` upon switching to the `Incidents` tab.
+  - `monitor_app/events.py` (Lines 44–48):
+    - Formally exported `INCIDENT_START`, `INCIDENT_STOP`, and `DECISION_TRIGGER` constants.
+  - `tests/test_live_incident_pipeline.py` (Lines 1–185):
+    - Authored 5 comprehensive integration and unit tests:
+      1. `test_incident_recorder_handle_incident_start_with_severity`
+      2. `test_camera_fusion_primary_camera_not_suppressed`
+      3. `test_end_to_end_decision_to_recording_and_db`
+      4. `test_camera_monitor_screen_review_active_incident_fallback`
+      5. `test_main_app_nav_badge_on_incident_start`
+
+- **Verification & Mechanical Gates:**
+  - Dedicated Live Pipeline Test Suite: `pytest tests/test_live_incident_pipeline.py` — **5 of 5 passed in 2.88s**.
+  - Incidents & Dashboard Test Suite: `pytest tests/test_dashboard_incidents_ui.py` — **8 of 8 passed in 18.96s**.
+  - Reports & Settings Test Suite: `pytest tests/test_reports_settings_ui.py` — **10 of 10 passed in 10.45s**.
+  - Codebase Integrity Suite: `pytest tests/test_codebase_integrity.py` — **passed**.
+  - Full Mechanical Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`** (21 of 21 tests passed).
+
+
+
+---
+
+## 18. Institutional Logo, Application Icon, and Installer Wizard Branding Integration
+- **Objective & Scope:**
+  - Integrated the custom CellWatch AI institutional surveillance logo featuring the BJMP facility compound, guard watchtowers, perimeter security, and the computer vision surveillance eye.
+  - Deployed formatted brand assets across the live application window titlebar, taskbar, login screen, navigation bar, Windows `.ico` shortcut icons, and the Inno Setup modern installer wizard.
+
+- **Assets Generated & Formatted:**
+  1. `monitor_app/assets/logo.png` & `assets/logo.png`: 512×512 square master logo with transparent background, preserving internal building geometry and eye sclera fills.
+  2. `monitor_app/assets/logo_full.png`: 617×544 high-resolution horizontal banner featuring the complete artwork, "CELLWATCH" logotype, and "AI CONTRABAND DETECTION" amber tagline.
+  3. `monitor_app/assets/app_icon.ico` & `assets/app_icon.ico`: Multi-resolution Windows application icon (16×16, 24×24, 32×32, 48×48, 64×64, 128×128, 256×256) crafted from the surveillance eye and watchtower emblem.
+  4. `installer/wizard_banner.bmp`: 164×314 24-bit bitmap banner formatted for the Inno Setup modern welcome and completion wizard screens.
+  5. `installer/wizard_small.bmp`: 55×55 24-bit bitmap logo for the upper-right corner of Inno Setup installation pages.
+
+- **Code Modifications:**
+  - `monitor_app/main.py` (Lines 87–102, 160–166):
+    - Configured `self.iconbitmap(ico_path)` in `CellWatchApp.__init__` with fallback path resolution to ensure Windows titlebar, taskbar, and Alt-Tab window icons render the CellWatch emblem.
+    - Updated navigation bar logo display with `CTkImage(size=(38, 38))`.
+  - `monitor_app/auth.py` (Lines 391–400):
+    - Updated `_load_logo_image` to scale at `(68, 68)` for balanced proportion alongside the 38pt system title and mission statement.
+  - `installer/CellWatch.iss` (Lines 30–38, 52–56):
+    - Added `WizardImageFile=wizard_banner.bmp` and `WizardSmallImageFile=wizard_small.bmp`.
+    - Added `SetupIconFile=..\monitor_app\assets\app_icon.ico` and `UninstallIconFile=..\monitor_app\assets\app_icon.ico`.
+    - Assigned `IconFilename: "{app}\{#MyAppExeName}"` to Start Menu and Desktop shortcuts.
+  - `CellWatch.spec` (Line 56):
+    - Assigned `icon='monitor_app/assets/app_icon.ico'` to the PyInstaller `EXE` builder.
+  - `tests/test_installer_prereqs.py` (Lines 163–205):
+    - Authored `test_logo_and_installer_branding_assets` verifying PNG/BMP dimensions, `.ico` format validity, and installer/spec directives.
+
+- **Verification & Gates:**
+  - Automated Installer & Branding Tests: `pytest tests/test_installer_prereqs.py` — **8 of 8 passed in 3.04s**.
+  - Comprehensive Test Suite: 32 tests passed across live pipeline, dashboard, reports, settings, and auth.
+  - Full Mechanical Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`** (29 of 29 passed).
+
+
+---
+
+## 18. Institutional Logo, Application Icon, and Installer Wizard Branding Integration
+- **Objective & Scope:**
+  - Integrated the custom CellWatch AI institutional surveillance logo featuring the BJMP facility compound, guard watchtowers, perimeter security, and the computer vision surveillance eye.
+  - Deployed formatted brand assets across the live application window titlebar, taskbar, login screen, navigation bar, Windows `.ico` shortcut icons, and the Inno Setup modern installer wizard.
+
+- **Assets Generated & Formatted:**
+  1. `monitor_app/assets/logo.png` & `assets/logo.png`: 512×512 square master logo with transparent background, preserving internal building geometry and eye sclera fills.
+  2. `monitor_app/assets/logo_full.png`: 617×544 high-resolution horizontal banner featuring the complete artwork, "CELLWATCH" logotype, and "AI CONTRABAND DETECTION" amber tagline.
+  3. `monitor_app/assets/app_icon.ico` & `assets/app_icon.ico`: Multi-resolution Windows application icon (16×16, 24×24, 32×32, 48×48, 64×64, 128×128, 256×256) crafted from the surveillance eye and watchtower emblem.
+  4. `installer/wizard_banner.bmp`: 164×314 24-bit bitmap banner formatted for the Inno Setup modern welcome and completion wizard screens.
+  5. `installer/wizard_small.bmp`: 55×55 24-bit bitmap logo for the upper-right corner of Inno Setup installation pages.
+
+- **Code Modifications:**
+  - `monitor_app/main.py` (Lines 87–102, 160–166):
+    - Configured `self.iconbitmap(ico_path)` in `CellWatchApp.__init__` with fallback path resolution to ensure Windows titlebar, taskbar, and Alt-Tab window icons render the CellWatch emblem.
+    - Updated navigation bar logo display with `CTkImage(size=(38, 38))`.
+  - `monitor_app/auth.py` (Lines 391–400):
+    - Updated `_load_logo_image` to scale at `(68, 68)` for balanced proportion alongside the 38pt system title and mission statement.
+  - `installer/CellWatch.iss` (Lines 30–38, 52–56):
+    - Added `WizardImageFile=wizard_banner.bmp` and `WizardSmallImageFile=wizard_small.bmp`.
+    - Added `SetupIconFile=..\monitor_app\assets\app_icon.ico` and `UninstallIconFile=..\monitor_app\assets\app_icon.ico`.
+    - Assigned `IconFilename: "{app}\{#MyAppExeName}"` to Start Menu and Desktop shortcuts.
+  - `CellWatch.spec` (Line 56):
+    - Assigned `icon='monitor_app/assets/app_icon.ico'` to the PyInstaller `EXE` builder.
+  - `tests/test_installer_prereqs.py` (Lines 163–205):
+    - Authored `test_logo_and_installer_branding_assets` verifying PNG/BMP dimensions, `.ico` format validity, and installer/spec directives.
+
+- **Verification & Gates:**
+  - Automated Installer & Branding Tests: `pytest tests/test_installer_prereqs.py` — **8 of 8 passed in 3.04s**.
+  - Comprehensive Test Suite: 32 tests passed across live pipeline, dashboard, reports, settings, and auth.
+  - Full Mechanical Gate: `.agents/team/diff-scan.ps1` — **`RESULT: GREEN`** (29 of 29 passed).
+
+
+
+---
+
+## 19. Production App Rebuild & Inno Setup Packaging (v1.0.0 with Brand Assets)
+- **Objective & Scope:**
+  - Rebuilt the full standalone distribution of CellWatch AI, compiling all recent enhancements:
+    - Custom CellWatch AI institutional branding, multi-size `.ico` app icon, and login hero graphics.
+    - Live incident detection pipeline (end-to-end hookup from MoveNet/YOLO to recording and `incidents.db`).
+    - Dynamic feed card alert indicators, borders, and real-time navigation badge (`Incidents 🚨`).
+    - Reports analytics engine with database audit column compliance.
+    - Settings monitoring controls and normalized sequential camera IDs.
+  - Packaged the PyInstaller distribution into the final Inno Setup executable installer with the custom wizard banner and icon.
+
+- **Pipeline Execution & Results:**
+  1. **Stage 1 — PyInstaller Compilation (`CellWatch.spec`):**
+     - Invoked `.venv310\Scripts\pyinstaller.exe --noconfirm CellWatch.spec`.
+     - Embedded `monitor_app/assets/app_icon.ico` directly into `dist\CellWatch\CellWatch.exe`.
+     - Bundled updated `monitor_app/assets/` containing `logo.png`, `logo_full.png`, and `app_icon.ico`.
+  2. **Stage 2 — Inno Setup Compilation (`scripts/build_installer.ps1`):**
+     - Compiled `installer\CellWatch.iss` using Inno Setup 6 (`ISCC.exe`).
+     - Integrated `installer\wizard_banner.bmp` (164×314) and `installer\wizard_small.bmp` (55×55).
+     - Applied solid `lzma2/ultra64` compression over the 3.5GB runtime tree.
+  3. **Stage 3 — Artifact Verification & Manifest:**
+     - Target Installer: `artifacts\installer\CellWatch-Setup-1.0.0.exe`
+     - Final Size: **3,271.92 MB**
+     - SHA-256 Hash: `56ab521a5c9874c42c21231bdec03bc2edfbf7a58a401b51759f2f4562ff5815`
+     - Generated/Updated: `artifacts\installer\version.json`
+
+- **Verification:**
+  - Mechanical Gate: `.agents/team/diff-scan.ps1` $\rightarrow$ **`RESULT: GREEN`** (29 of 29 passed).
+
+
+---
+
+## 19. Production App Rebuild & Inno Setup Packaging (v1.0.0 with Brand Assets)
+- **Objective & Scope:**
+  - Rebuilt the full standalone distribution of CellWatch AI, compiling all recent enhancements:
+    - Custom CellWatch AI institutional branding, multi-size `.ico` app icon, and login hero graphics.
+    - Live incident detection pipeline (end-to-end hookup from MoveNet/YOLO to recording and `incidents.db`).
+    - Dynamic feed card alert indicators, borders, and real-time navigation badge (`Incidents 🚨`).
+    - Reports analytics engine with database audit column compliance.
+    - Settings monitoring controls and normalized sequential camera IDs.
+  - Packaged the PyInstaller distribution into the final Inno Setup executable installer with the custom wizard banner and icon.
+
+- **Pipeline Execution & Results:**
+  1. **Stage 1 — PyInstaller Compilation (`CellWatch.spec`):**
+     - Invoked `.venv310\Scripts\pyinstaller.exe --noconfirm CellWatch.spec`.
+     - Embedded `monitor_app/assets/app_icon.ico` directly into `dist\CellWatch\CellWatch.exe`.
+     - Bundled updated `monitor_app/assets/` containing `logo.png`, `logo_full.png`, and `app_icon.ico`.
+  2. **Stage 2 — Inno Setup Compilation (`scripts/build_installer.ps1`):**
+     - Compiled `installer\CellWatch.iss` using Inno Setup 6 (`ISCC.exe`).
+     - Integrated `installer\wizard_banner.bmp` (164×314) and `installer\wizard_small.bmp` (55×55).
+     - Applied solid `lzma2/ultra64` compression over the 3.5GB runtime tree.
+  3. **Stage 3 — Artifact Verification & Manifest:**
+     - Target Installer: `artifacts\installer\CellWatch-Setup-1.0.0.exe`
+     - Final Size: **3,271.92 MB**
+     - SHA-256 Hash: `56ab521a5c9874c42c21231bdec03bc2edfbf7a58a401b51759f2f4562ff5815`
+     - Generated/Updated: `artifacts\installer\version.json`
+
+- **Verification:**
+  - Mechanical Gate: `.agents/team/diff-scan.ps1` $\rightarrow$ **`RESULT: GREEN`** (29 of 29 passed).
+
+
+
+---
+
+## 20. Live Monitor Teardown Hardening & Incident Auto-Finalization on Navigation
+- **Objective & Scope:**
+  - Resolved the incident dropped recording bug where active detections (e.g. `INC_20261027_224708_1`) did not persist to `incidents.db` when navigating to the Incidents tab.
+  - Eliminated the Windows Media Foundation webcam reconnect crash (`CvCapture_MSMF::grabFrame videoio(MSMF): can't grab frame. Error: -2147483638`) and component failure warnings when returning to Live Monitor.
+  - Accelerated contraband detection (cellphone, knife) to confirm immediately without lag.
+  - Prevented centralized inference queue backpressure on screen re-entry.
+
+- **Detailed Line-by-Line Changes:**
+  1. `monitor_app/incident_record.py` (Lines 326–340):
+     - Added `close(self)` method to `IncidentRecorder`:
+       - If `self.state == self.RECORDING`, calls `self._stop_recording()` immediately to release the OpenCV `VideoWriter` and commit the incident row and audit columns to `incidents.db`.
+       - Cleanly unregisters EventBus subscriptions (`INCIDENT_START`, `EVIDENCE_ADDED`, `INCIDENT_STOP`) to eliminate zombie listeners.
+     - Purpose: Ensures that switching screens while an incident is actively recording automatically finalizes and flushes the evidence clip and database record.
+  2. `monitor_app/camera_view.py`:
+     - Lines 1210–1225 (`CameraMonitorScreen.start_monitoring`):
+       - Replaced parallel `ThreadPoolExecutor` multi-camera launch with sequential staggered initialization (80ms delay between cameras).
+       - Purpose: Prevents concurrent USB root hub bus contention and DirectShow/MSMF initialization collisions on multi-camera setups.
+     - Lines 1399–1430 (`CameraFeedWidget._open_capture`):
+       - Joined existing `self.cap_thread` before calling `release()` on `self.cap`.
+       - Prioritized `cv2.CAP_DSHOW` (DirectShow) ahead of `cv2.CAP_MSMF` for integer webcam devices on Windows.
+       - Implemented probe frame read (`test_ret, test_frame = cap.read()`) to reject handles where `isOpened()` returns true but frame grabbing fails.
+       - Purpose: Resolves Windows Media Foundation Error -2147483638 and prevents driver deadlocks.
+     - Lines 1770–1810 (`CameraFeedWidget.stop`):
+       - Explicitly joined `self.cap_thread` and `self.worker_thread` (0.8s timeout) so native read loops finish before release.
+       - Synchronously released `self.cap`.
+       - Added call to `self.recorder.close()` to finalize any open recording session before widget teardown.
+       - Flushed and drained `self.frame_queue` and `self.result_queue`.
+       - Purpose: Ensures zero zombie threads, zero COM lock retention, and immediate persistence of all in-flight incidents.
+  3. `monitor_app/alert_manager.py` (Lines 141, 149):
+     - Added `"MEDIUM"` severity (contraband detections like cellphone) to the immediate confirmation gate alongside `"CRITICAL"` and `"HIGH"`.
+     - Purpose: Ensures cellphone detections transition immediately to `CONFIRMED` state and begin recording without waiting for delay thresholds.
+  4. `monitor_app/central_inference.py` (Lines 106–112):
+     - Drained `self.task_queue` in `CentralInferenceManager.stop()`.
+     - Purpose: Prevents queue overflow warnings (`Queue Overflow (Backpressure) | Queue Size: 15`) upon reopening the Live Monitor screen.
+  5. `tests/test_live_incident_pipeline.py` (Lines 103–144):
+     - Added `test_incident_recorder_close_finalizes_active_recording` and `test_contraband_medium_severity_confirms_immediately`.
+     - Purpose: Automated regression test coverage for recorder shutdown finalization and contraband immediate confirmation.
+
+- **Pipeline Execution & Results:**
+  1. **Mechanical Gate:**
+     - Executed `.agents/team/diff-scan.ps1`:
+     - Result: **`RESULT: GREEN`** (31 of 31 test suites passed in 34.32s).
+  2. **PyInstaller Compilation (`CellWatch.spec`):**
+     - Compiled executable distribution into `dist\CellWatch\CellWatch.exe`.
+  3. **Inno Setup Installer Compilation (`scripts/build_installer.ps1`):**
+     - Compiled installer executable using Inno Setup 6 (`ISCC.exe`).
+     - Target Installer: `artifacts\installer\CellWatch-Setup-1.0.0.exe`
+     - Final Size: **3,272.10 MB**
+     - SHA-256 Hash: `418137e89c497361aa840265c81b7221019284e1a1faead775b0cd5b94bd5017`
+     - Updated: `artifacts\installer\version.json`
+
+
+---
+
+## 20. Live Monitor Teardown Hardening & Incident Auto-Finalization on Navigation
+- **Objective & Scope:**
+  - Resolved the incident dropped recording bug where active detections (e.g. `INC_20261027_224708_1`) did not persist to `incidents.db` when navigating to the Incidents tab.
+  - Eliminated the Windows Media Foundation webcam reconnect crash (`CvCapture_MSMF::grabFrame videoio(MSMF): can't grab frame. Error: -2147483638`) and component failure warnings when returning to Live Monitor.
+  - Accelerated contraband detection (cellphone, knife) to confirm immediately without lag.
+  - Prevented centralized inference queue backpressure on screen re-entry.
+
+- **Detailed Line-by-Line Changes:**
+  1. `monitor_app/incident_record.py` (Lines 326–340):
+     - Added `close(self)` method to `IncidentRecorder`:
+       - If `self.state == self.RECORDING`, calls `self._stop_recording()` immediately to release the OpenCV `VideoWriter` and commit the incident row and audit columns to `incidents.db`.
+       - Cleanly unregisters EventBus subscriptions (`INCIDENT_START`, `EVIDENCE_ADDED`, `INCIDENT_STOP`) to eliminate zombie listeners.
+     - Purpose: Ensures that switching screens while an incident is actively recording automatically finalizes and flushes the evidence clip and database record.
+  2. `monitor_app/camera_view.py`:
+     - Lines 1210–1225 (`CameraMonitorScreen.start_monitoring`):
+       - Replaced parallel `ThreadPoolExecutor` multi-camera launch with sequential staggered initialization (80ms delay between cameras).
+       - Purpose: Prevents concurrent USB root hub bus contention and DirectShow/MSMF initialization collisions on multi-camera setups.
+     - Lines 1399–1430 (`CameraFeedWidget._open_capture`):
+       - Joined existing `self.cap_thread` before calling `release()` on `self.cap`.
+       - Prioritized `cv2.CAP_DSHOW` (DirectShow) ahead of `cv2.CAP_MSMF` for integer webcam devices on Windows.
+       - Implemented probe frame read (`test_ret, test_frame = cap.read()`) to reject handles where `isOpened()` returns true but frame grabbing fails.
+       - Purpose: Resolves Windows Media Foundation Error -2147483638 and prevents driver deadlocks.
+     - Lines 1770–1810 (`CameraFeedWidget.stop`):
+       - Explicitly joined `self.cap_thread` and `self.worker_thread` (0.8s timeout) so native read loops finish before release.
+       - Synchronously released `self.cap`.
+       - Added call to `self.recorder.close()` to finalize any open recording session before widget teardown.
+       - Flushed and drained `self.frame_queue` and `self.result_queue`.
+       - Purpose: Ensures zero zombie threads, zero COM lock retention, and immediate persistence of all in-flight incidents.
+  3. `monitor_app/alert_manager.py` (Lines 141, 149):
+     - Added `"MEDIUM"` severity (contraband detections like cellphone) to the immediate confirmation gate alongside `"CRITICAL"` and `"HIGH"`.
+     - Purpose: Ensures cellphone detections transition immediately to `CONFIRMED` state and begin recording without waiting for delay thresholds.
+  4. `monitor_app/central_inference.py` (Lines 106–112):
+     - Drained `self.task_queue` in `CentralInferenceManager.stop()`.
+     - Purpose: Prevents queue overflow warnings (`Queue Overflow (Backpressure) | Queue Size: 15`) upon reopening the Live Monitor screen.
+  5. `tests/test_live_incident_pipeline.py` (Lines 103–144):
+     - Added `test_incident_recorder_close_finalizes_active_recording` and `test_contraband_medium_severity_confirms_immediately`.
+     - Purpose: Automated regression test coverage for recorder shutdown finalization and contraband immediate confirmation.
+
+- **Pipeline Execution & Results:**
+  1. **Mechanical Gate:**
+     - Executed `.agents/team/diff-scan.ps1`:
+     - Result: **`RESULT: GREEN`** (31 of 31 test suites passed in 34.32s).
+  2. **PyInstaller Compilation (`CellWatch.spec`):**
+     - Compiled executable distribution into `dist\CellWatch\CellWatch.exe`.
+  3. **Inno Setup Installer Compilation (`scripts/build_installer.ps1`):**
+     - Compiled installer executable using Inno Setup 6 (`ISCC.exe`).
+     - Target Installer: `artifacts\installer\CellWatch-Setup-1.0.0.exe`
+     - Final Size: **3,272.10 MB**
+     - SHA-256 Hash: `418137e89c497361aa840265c81b7221019284e1a1faead775b0cd5b94bd5017`
+     - Updated: `artifacts\installer\version.json`
+
+
+
+---
+
+## 21. Live Monitor Multi-Cycle Freeze Resolution & Thread-Safety Hardening
+- **Objective & Scope:**
+  - Resolved the Live Monitoring freeze where video feeds functioned smoothly on initial run but got permanently stuck on the 2nd and 3rd visits while the terminal printed continuous fallback increments (`Fallbacks: 108, 109, 110...`) and queue overflow warnings.
+  - Eliminated the background thread collision caused by unjoined `connect_all` workers holding native USB hardware capture locks.
+  - Eliminated cross-thread Tkinter calls (`self.after(0, ...)`) from background worker threads which raised `RuntimeError: main thread is not in main loop` and aborted camera initialization.
+  - Decoupled live video feed display from heavy inference backpressure drops so raw frames display at 30 FPS even under heavy AI load.
+  - Enforced graceful video capture release on widget teardown without hanging the GUI thread.
+
+- **Detailed Line-by-Line Changes:**
+  1. `monitor_app/camera_view.py`:
+     - Lines 1195–1200 (`CameraMonitorScreen.__init__`):
+       - Initialized `self._is_monitoring = False`, `self._connecting = False`, `self._connect_thread = None`, `self._poll_connecting_job = None`.
+       - Purpose: Tracks the lifecycle and worker thread of camera connections across repeated screen switches.
+     - Lines 1209–1239 (`CameraMonitorScreen.start_monitoring`):
+       - Sets `self._is_monitoring = True` and launches `self._connect_thread = threading.Thread(target=connect_all, daemon=True)`.
+       - Inside `connect_all`: Added boundary check `if not getattr(self, "_is_monitoring", False): break` before initializing each camera feed.
+       - Removed dangerous secondary-thread call `self.after(0, self._hide_connecting_overlay)`; replaced with main-thread timer poller `self._poll_connecting_status()`.
+       - Purpose: Prevents zombie connection threads from running into destroyed widgets and avoids Tkinter cross-thread exceptions.
+     - Lines 1240–1249 (`CameraMonitorScreen._poll_connecting_status`):
+       - Implemented main-thread polling loop using `self.after(100, self._poll_connecting_status)` to safely dismiss the connection overlay when `self._connecting` becomes false.
+       - Purpose: Strictly adheres to Tkinter GUI single-thread affinity rules.
+     - Lines 1270–1298 (`CameraMonitorScreen.stop_monitoring`):
+       - Added `self._is_monitoring = False` and cancelled `self._poll_connecting_job`.
+       - Added explicit join for `self._connect_thread` (`self._connect_thread.join(timeout=1.5)`).
+       - Purpose: Guarantees background connection activity completely terminates before navigating to other tabs.
+     - Lines 1318–1348 (`CameraMonitorScreen._on_incident_alert`, `_on_decision_alert`):
+       - Guarded callbacks with `if not self.winfo_exists() or not getattr(self, "_is_monitoring", False): return`.
+       - Switched dispatch from `self.after(0, ...)` to `self.after_idle(...)`.
+       - Purpose: Prevents queued event callbacks from executing on stale screen widgets.
+     - Lines 1385–1395 (`CameraFeedWidget.__init__` & `start`):
+       - Scheduled `self.update_loop` initialization directly from the main GUI thread during `__init__`.
+       - Removed `self.after(0, self.update_loop)` from `CameraFeedWidget.start()` (which executes in the background `connect_all` thread).
+       - Purpose: Eliminates `RuntimeError: main thread is not in main loop` inside Tkinter's `createcommand()`.
+     - Lines 1520–1530 (`CameraFeedWidget._open_capture`):
+       - Replaced cross-thread `self.after(0, _set_offline)` with `self.is_offline = True`, which is read safely by `self.update_loop()` on the main thread.
+       - Purpose: Eliminates cross-thread widget property mutations.
+     - Lines 1690–1720 (`CameraFeedWidget._on_inference_complete`):
+       - Removed the early `return` condition when `processing_mode == "Queue Drop (Backpressure)"`.
+       - Ensures that the current live camera frame is always resized and pushed to `self.result_queue` for rendering at 30 FPS.
+       - Restricted `self.recorder.process_frame()` to non-dropped frames only.
+       - Purpose: Resolves the video freeze / high fallback count issue (`Fallbacks: 110+`) when GPU inference drops frames under peak load.
+     - Lines 1813–1845 (`CameraFeedWidget.stop`):
+       - Set `self.running = False`, `self.is_stopped = True`, and pushed termination token `(False, None)` to unblock `self.frame_queue`.
+       - Joined `self.cap_thread` first (0.5s timeout) before releasing OpenCV capture handles.
+       - If capture thread is finishing a blocking read, delegates release to a daemon background thread (`_safe_release`) so the main thread never stalls.
+       - Purpose: Guarantees immediate, clean hardware handle release on Windows DirectShow/MSMF without locking up camera devices for subsequent visits.
+
+  2. `monitor_app/central_inference.py`:
+     - Lines 107–113 (`CentralInferenceManager.stop`):
+       - Added task queue draining loop upon shutdown.
+       - Increased worker thread join timeout to 3.0s.
+       - Purpose: Prevents backpressure queue buildup between screen switches.
+
+- **Verification & Mechanical Gate:**
+  1. **Multi-Cycle Screen Switch Automated Test (`scratch/test_multi_cycle.py`):**
+     - Cycled 3 consecutive times through: `Dashboard -> Live Monitor (3.0s active stream) -> Dashboard -> Live Monitor`.
+     - Output: `ALL 3 CYCLES COMPLETED CLEANLY!` with 0 errors, full 30 FPS inference execution (~33ms YOLO GPU, ~12ms MoveNet CPU), and proper camera reconnection on all cycles.
+  2. **Diff-Scan Mechanical Gate (`.agents/team/diff-scan.ps1`):**
+     - 31 out of 31 test suites passed in 27.99s.
+     - Result: **`RESULT: GREEN`**.

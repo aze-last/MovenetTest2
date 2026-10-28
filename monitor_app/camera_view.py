@@ -103,155 +103,661 @@ class LocalMotionGater:
 class CameraManagementDialog(ctk.CTkToplevel):
     def __init__(self, parent, on_refresh):
         super().__init__(parent)
-        self.title("Manage Camera Network")
-        self.geometry("700x650")
+        self.title("Manage Camera Network - BJMP Institutional Monitor")
+        self.geometry("880x680")
+        self.minsize(820, 620)
         self.on_refresh = on_refresh
         self.after(200, lambda: self.focus_force())
         
-        # Institutional Palette
+        # Adaptive Institutional Palette (Light / Dark mode compatible)
         self.PALETTE = {
-            "bg": "#06090c",
-            "card": "#0f161f",
-            "accent": "#4f84bb",
-            "border": "#1e2c3a",
-            "text": "#ffffff",
-            "muted": "#a2b5c7",
-            "danger": "#f25c5c"
+            "page": ("#f1f5f9", "#0b0f14"),
+            "card": ("#ffffff", "#131b24"),
+            "card_subtle": ("#f8fafc", "#182330"),
+            "border": ("#cbd5e1", "#223244"),
+            "accent": ("#1d4ed8", "#4f84bb"),
+            "accent_hover": ("#1e40af", "#426f9b"),
+            "text": ("#0f172a", "#f1f5f9"),
+            "muted": ("#64748b", "#8fa2b4"),
+            "subtle": ("#94a3b8", "#5d7185"),
+            "success": ("#16a34a", "#42c08d"),
+            "warning": ("#d97706", "#d7a75a"),
+            "danger": ("#dc2626", "#e05252"),
         }
         
-        self.configure(fg_color=self.PALETTE["bg"])
+        self.configure(fg_color=self.PALETTE["page"])
         self.selected_cam_id = None
+        self._is_testing_connection = False
+
+        # Form variables
+        self.name_var = tk.StringVar()
+        self.source_var = tk.StringVar()
+        self.protocol_var = tk.StringVar(value="RTSP")
+        self.ip_var = tk.StringVar()
+        self.port_var = tk.StringVar(value="554")
+        self.path_var = tk.StringVar(value="/stream1")
+        self.user_var = tk.StringVar()
+        self.pass_var = tk.StringVar()
+        self.show_pass_var = tk.BooleanVar(value=False)
+        self.preset_var = tk.StringVar(value="Custom")
         
         self._build_ui()
+        self._apply_appearance()
         self._load_cameras()
         self._scan_local_cameras()
 
     def _build_ui(self):
-        # Header
-        header = ctk.CTkFrame(self, fg_color=self.PALETTE["card"], corner_radius=0)
-        header.pack(fill="x", pady=(0, 2))
+        # 1. Header Toolbar
+        header = ctk.CTkFrame(self, fg_color=self.PALETTE["card"], corner_radius=0, height=58)
+        header.pack(fill="x", side="top")
+        header.pack_propagate(False)
+
+        hdr_left = ctk.CTkFrame(header, fg_color="transparent")
+        hdr_left.pack(side="left", padx=20, fill="y")
+
+        ctk.CTkLabel(
+            hdr_left,
+            text="CAMERA INFRASTRUCTURE & VMS MANAGER",
+            font=("Segoe UI Bold", 14),
+            text_color=self.PALETTE["accent"]
+        ).pack(anchor="w", pady=(10, 0))
+
+        ctk.CTkLabel(
+            hdr_left,
+            text="Configure RTSP Network Streams & DirectShow USB Feeds",
+            font=("Segoe UI", 11),
+            text_color=self.PALETTE["muted"]
+        ).pack(anchor="w")
+
+        # Capacity badge
+        self.lbl_capacity_badge = ctk.CTkLabel(
+            header,
+            text="0 / 4 CHANNELS CONFIGURED",
+            font=("Segoe UI Bold", 11),
+            fg_color=self.PALETTE["card_subtle"],
+            text_color=self.PALETTE["accent"],
+            corner_radius=6,
+            padx=12,
+            pady=6
+        )
+        self.lbl_capacity_badge.pack(side="right", padx=20, pady=12)
+
+        # 2. Bottom Action Footer
+        footer = ctk.CTkFrame(self, fg_color=self.PALETTE["card"], corner_radius=0, height=54)
+        footer.pack(fill="x", side="bottom")
+        footer.pack_propagate(False)
+
+        ctk.CTkLabel(
+            footer,
+            text="Optimized for Windows Laptop · NVIDIA RTX 2050 (Target: 20–30 FPS with MoveNet & YOLO)",
+            font=("Segoe UI", 11),
+            text_color=self.PALETTE["subtle"]
+        ).pack(side="left", padx=20)
+
+        self.btn_back = ctk.CTkButton(
+            footer,
+            text="Close & Apply to Feeds",
+            height=36,
+            corner_radius=8,
+            fg_color=self.PALETTE["accent"],
+            hover_color=self.PALETTE["accent_hover"],
+            font=("Segoe UI Semibold", 12),
+            command=self.close_and_refresh
+        )
+        self.btn_back.pack(side="right", padx=20, pady=9)
+
+        # 3. Main Two-Column Master-Detail Body
+        main = ctk.CTkFrame(self, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=16, pady=14)
+        main.grid_columnconfigure(0, weight=4, minsize=320)
+        main.grid_columnconfigure(1, weight=5, minsize=440)
+        main.grid_rowconfigure(0, weight=1)
+
+        # ==========================================
+        # LEFT COLUMN: Channel Inventory (Master)
+        # ==========================================
+        left_card = ctk.CTkFrame(main, fg_color=self.PALETTE["card"], corner_radius=12, border_width=1, border_color=self.PALETTE["border"])
+        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_card.grid_rowconfigure(1, weight=1)
+        left_card.grid_columnconfigure(0, weight=1)
+
+        # Left Header
+        left_top = ctk.CTkFrame(left_card, fg_color="transparent")
+        left_top.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
         
         ctk.CTkLabel(
-            header, 
-            text="CAMERA INFRASTRUCTURE", 
-            font=("Segoe UI Bold", 13), 
-            text_color=self.PALETTE["accent"],
-            padx=20, pady=15
+            left_top,
+            text="CONFIGURED INPUTS",
+            font=("Segoe UI Bold", 12),
+            text_color=self.PALETTE["text"]
         ).pack(side="left")
 
-        # Main Container
-        self.main = ctk.CTkFrame(self, fg_color="transparent")
-        self.main.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        # Form
-        form = ctk.CTkFrame(self.main, fg_color=self.PALETTE["card"], corner_radius=12, border_width=1, border_color=self.PALETTE["border"])
-        form.pack(fill="x", pady=(0, 20))
-        
-        inner_form = ctk.CTkFrame(form, fg_color="transparent")
-        inner_form.pack(fill="x", padx=15, pady=15)
-        
-        self.name_var = tk.StringVar()
-        self.source_var = tk.StringVar()
-        
-        # Entry Fields
-        ctk.CTkLabel(inner_form, text="Camera Name", font=("Segoe UI Semibold", 12), text_color=self.PALETTE["muted"]).grid(row=0, column=0, sticky="w", padx=5)
-        self.entry_name = ctk.CTkEntry(inner_form, textvariable=self.name_var, placeholder_text="e.g. Front Gate", height=36, corner_radius=8)
-        self.entry_name.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 10))
-        
-        src_header = ctk.CTkFrame(inner_form, fg_color="transparent")
-        src_header.grid(row=0, column=1, sticky="ew", padx=5)
-        ctk.CTkLabel(src_header, text="Source (URL or Index)", font=("Segoe UI Semibold", 12), text_color=self.PALETTE["muted"]).pack(side="left")
-        ctk.CTkButton(src_header, text="Scan Webcams", width=80, height=20, corner_radius=6, fg_color=self.PALETTE["border"], command=self._scan_local_cameras).pack(side="right")
-        self.entry_src = ctk.CTkComboBox(inner_form, variable=self.source_var, values=["rtsp://..."], height=36, corner_radius=8)
-        self.entry_src.grid(row=1, column=1, sticky="ew", padx=5, pady=(0, 10))
-        
-        inner_form.grid_columnconfigure((0, 1), weight=1)
-        
-        # Advanced RTSP Config
-        rtsp_frame = ctk.CTkFrame(inner_form, fg_color="transparent")
-        rtsp_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 10))
-        
-        self.ip_var = tk.StringVar()
-        self.port_var = tk.StringVar(value="554")
-        self.path_var = tk.StringVar(value="/stream")
-        self.user_var = tk.StringVar()
-        self.pass_var = tk.StringVar()
+        ctk.CTkLabel(
+            left_top,
+            text="(Click to edit)",
+            font=("Segoe UI", 10),
+            text_color=self.PALETTE["muted"]
+        ).pack(side="left", padx=6)
 
-        ctk.CTkLabel(rtsp_frame, text="Advanced RTSP Configuration", font=("Segoe UI Semibold", 12), text_color=self.PALETTE["accent"]).pack(anchor="w")
+        # Treeview in Left Column
+        tree_container = ctk.CTkFrame(left_card, fg_color="transparent")
+        tree_container.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
+        tree_container.grid_rowconfigure(0, weight=1)
+        tree_container.grid_columnconfigure(0, weight=1)
 
-        def _labeled_field(parent, label_text, variable, width, placeholder, show=""):
-            col = ctk.CTkFrame(parent, fg_color="transparent")
-            col.pack(side="left", padx=(0, 8))
-            ctk.CTkLabel(col, text=label_text, font=("Segoe UI", 10), text_color=self.PALETTE["muted"]).pack(anchor="w")
-            ctk.CTkEntry(col, textvariable=variable, placeholder_text=placeholder, width=width, height=32, show=show).pack(anchor="w")
-
-        rtsp_creds = ctk.CTkFrame(rtsp_frame, fg_color="transparent")
-        rtsp_creds.pack(fill="x", pady=(5, 0))
-
-        _labeled_field(rtsp_creds, "Username", self.user_var, 210, "Camera account (NOT TP-Link login)")
-        _labeled_field(rtsp_creds, "Password", self.pass_var, 210, "Camera account password", show="•")
-
-        rtsp_inputs = ctk.CTkFrame(rtsp_frame, fg_color="transparent")
-        rtsp_inputs.pack(fill="x", pady=5)
-
-        _labeled_field(rtsp_inputs, "IP Address", self.ip_var, 180, "192.168.1.100")
-        _labeled_field(rtsp_inputs, "Port", self.port_var, 70, "554")
-        _labeled_field(rtsp_inputs, "Path", self.path_var, 120, "/stream1")
-
-        btn_col = ctk.CTkFrame(rtsp_inputs, fg_color="transparent")
-        btn_col.pack(side="left", padx=(4, 0))
-        ctk.CTkLabel(btn_col, text=" ", font=("Segoe UI", 10)).pack(anchor="w")
-        ctk.CTkButton(btn_col, text="Build URL", height=32, corner_radius=8, fg_color=self.PALETTE["border"], command=self._build_rtsp_url).pack(anchor="w")
-
-        # Action Buttons
-        btn_box = ctk.CTkFrame(inner_form, fg_color="transparent")
-        btn_box.grid(row=3, column=0, columnspan=2, sticky="e")
-        
-        self.btn_save = ctk.CTkButton(btn_box, text="Add Camera", height=32, corner_radius=8, fg_color=self.PALETTE["accent"], command=self._save_camera)
-        self.btn_save.pack(side="right", padx=5)
-        
-        self.btn_clear = ctk.CTkButton(btn_box, text="Clear", height=32, corner_radius=8, fg_color=self.PALETTE["border"], command=self._clear_form)
-        self.btn_clear.pack(side="right", padx=5)
-
-        # List
-        list_card = ctk.CTkFrame(self.main, fg_color=self.PALETTE["card"], corner_radius=12, border_width=1, border_color=self.PALETTE["border"])
-        list_card.pack(fill="both", expand=True)
-        
-        # Treeview for cameras
         style = ttk.Style()
-        style.configure("Cams.Treeview", background=self.PALETTE["card"], foreground=self.PALETTE["text"], fieldbackground=self.PALETTE["card"], rowheight=30)
-        
-        self.tree = ttk.Treeview(list_card, columns=("id", "name", "source"), show="headings", style="Cams.Treeview")
+        style.configure("Cams.Treeview", rowheight=28, font=("Segoe UI", 10))
+        style.configure("Cams.Treeview.Heading", font=("Segoe UI Bold", 10))
+
+        self.tree = ttk.Treeview(
+            tree_container,
+            columns=("id", "name", "type", "source"),
+            show="headings",
+            style="Cams.Treeview",
+            selectmode="browse"
+        )
         self.tree.heading("id", text="ID")
-        self.tree.heading("name", text="NAME")
-        self.tree.heading("source", text="SOURCE PATH")
-        self.tree.column("id", width=40, anchor="center")
-        self.tree.column("name", width=150)
-        self.tree.column("source", width=250)
-        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+        self.tree.heading("name", text="CAMERA NAME")
+        self.tree.heading("type", text="TYPE")
+        self.tree.heading("source", text="SOURCE / URI")
+
+        self.tree.column("id", width=36, anchor="center")
+        self.tree.column("name", width=120, anchor="w")
+        self.tree.column("type", width=54, anchor="center")
+        self.tree.column("source", width=150, anchor="w")
+
+        tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_scroll.set)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        tree_scroll.grid(row=0, column=1, sticky="ns")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
-        # Delete Button
-        self.btn_del = ctk.CTkButton(self.main, text="Delete Selected", height=32, corner_radius=8, fg_color=self.PALETTE["danger"], hover_color="#c84545", command=self._delete_camera)
-        self.btn_del.pack(side="left", anchor="sw", pady=(10, 0))
+        # Left Action Toolbar (Add / Delete)
+        left_bot = ctk.CTkFrame(left_card, fg_color="transparent")
+        left_bot.grid(row=2, column=0, sticky="ew", padx=12, pady=(8, 12))
 
-        # Explicit Return Button
-        self.btn_back = ctk.CTkButton(self.main, text="RETURN TO MONITOR", height=40, corner_radius=12, fg_color=self.PALETTE["accent"], font=("Segoe UI Bold", 12), command=self.close_and_refresh)
-        self.btn_back.pack(side="right", anchor="se", pady=(10, 0))
+        self.btn_new = ctk.CTkButton(
+            left_bot,
+            text="+ New Channel",
+            height=32,
+            corner_radius=8,
+            fg_color=self.PALETTE["accent"],
+            hover_color=self.PALETTE["accent_hover"],
+            font=("Segoe UI Semibold", 11),
+            command=self._clear_form
+        )
+        self.btn_new.pack(side="left", padx=(0, 6))
+
+        self.btn_del = ctk.CTkButton(
+            left_bot,
+            text="Delete",
+            height=32,
+            corner_radius=8,
+            fg_color=self.PALETTE["card_subtle"],
+            hover_color=self.PALETTE["danger"],
+            text_color=self.PALETTE["danger"],
+            border_width=1,
+            border_color=self.PALETTE["border"],
+            font=("Segoe UI Semibold", 11),
+            command=self._delete_camera
+        )
+        self.btn_del.pack(side="left")
+
+        self.btn_renumber = ctk.CTkButton(
+            left_bot,
+            text="Renumber (1..N)",
+            height=32,
+            corner_radius=8,
+            fg_color=self.PALETTE["card_subtle"],
+            hover_color=self.PALETTE["border"],
+            text_color=self.PALETTE["text"],
+            border_width=1,
+            border_color=self.PALETTE["border"],
+            font=("Segoe UI Semibold", 11),
+            command=self._renumber_cameras
+        )
+        self.btn_renumber.pack(side="right")
+
+        # ==========================================
+        # RIGHT COLUMN: Stream Configuration (Detail)
+        # ==========================================
+        right_card = ctk.CTkFrame(main, fg_color=self.PALETTE["card"], corner_radius=12, border_width=1, border_color=self.PALETTE["border"])
+        right_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_card.grid_columnconfigure(0, weight=1)
+        right_card.grid_rowconfigure(1, weight=1)
+
+        # Right Header (Status Banner)
+        right_top = ctk.CTkFrame(right_card, fg_color="transparent")
+        right_top.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 8))
+
+        self.lbl_detail_title = ctk.CTkLabel(
+            right_top,
+            text="CHANNEL CONFIGURATION",
+            font=("Segoe UI Bold", 13),
+            text_color=self.PALETTE["text"]
+        )
+        self.lbl_detail_title.pack(side="left")
+
+        self.lbl_channel_tag = ctk.CTkLabel(
+            right_top,
+            text="NEW CHANNEL",
+            font=("Segoe UI Bold", 10),
+            fg_color=self.PALETTE["card_subtle"],
+            text_color=self.PALETTE["muted"],
+            corner_radius=6,
+            padx=8,
+            pady=3
+        )
+        self.lbl_channel_tag.pack(side="right")
+
+        # Right Form Scrollable Container
+        form_scroll = ctk.CTkScrollableFrame(right_card, fg_color="transparent")
+        form_scroll.grid(row=1, column=0, sticky="nsew", padx=14, pady=0)
+        form_scroll.grid_columnconfigure(0, weight=1)
+
+        # 1. Camera Name
+        ctk.CTkLabel(form_scroll, text="Camera Name / Sector", font=("Segoe UI Semibold", 11), text_color=self.PALETTE["muted"]).pack(anchor="w", pady=(4, 2))
+        self.entry_name = ctk.CTkEntry(
+            form_scroll,
+            textvariable=self.name_var,
+            placeholder_text="e.g. CAM 01 - Cell Block A East",
+            height=34,
+            corner_radius=8,
+            border_color=self.PALETTE["border"]
+        )
+        self.entry_name.pack(fill="x", pady=(0, 10))
+
+        # 2. Protocol Mode Toggle (RTSP vs Local USB)
+        proto_bar = ctk.CTkFrame(form_scroll, fg_color="transparent")
+        proto_bar.pack(fill="x", pady=(0, 8))
+        
+        ctk.CTkLabel(proto_bar, text="Stream Source Protocol", font=("Segoe UI Semibold", 11), text_color=self.PALETTE["muted"]).pack(side="left")
+        
+        self.proto_segmented = ctk.CTkSegmentedButton(
+            proto_bar,
+            values=["RTSP Stream", "USB Webcam"],
+            command=self._on_protocol_change,
+            height=28,
+            corner_radius=6,
+            font=("Segoe UI Semibold", 11),
+            selected_color=self.PALETTE["accent"],
+            selected_hover_color=self.PALETTE["accent_hover"]
+        )
+        self.proto_segmented.set("RTSP Stream")
+        self.proto_segmented.pack(side="right")
+
+        # 3. RTSP Configuration Group
+        self.rtsp_card = ctk.CTkFrame(form_scroll, fg_color=self.PALETTE["card_subtle"], corner_radius=10, border_width=1, border_color=self.PALETTE["border"])
+        self.rtsp_card.pack(fill="x", pady=(0, 10))
+        self.rtsp_card.grid_columnconfigure((0, 1, 2), weight=1)
+
+        # RTSP Vendor Preset
+        preset_row = ctk.CTkFrame(self.rtsp_card, fg_color="transparent")
+        preset_row.pack(fill="x", padx=12, pady=(10, 6))
+
+        ctk.CTkLabel(preset_row, text="Vendor URI Preset:", font=("Segoe UI Semibold", 10), text_color=self.PALETTE["muted"]).pack(side="left", padx=(0, 8))
+        self.preset_menu = ctk.CTkOptionMenu(
+            preset_row,
+            values=[
+                "Custom Path",
+                "TP-Link / Tapo (/stream1)",
+                "Hikvision (/Streaming/Channels/101)",
+                "Dahua (/cam/realmonitor?channel=1&subtype=0)",
+                "Generic ONVIF (/live/ch0)"
+            ],
+            variable=self.preset_var,
+            command=self._on_preset_selected,
+            height=28,
+            corner_radius=6,
+            font=("Segoe UI", 11),
+            fg_color=self.PALETTE["border"],
+            button_color=self.PALETTE["accent"],
+            button_hover_color=self.PALETTE["accent_hover"],
+            text_color=self.PALETTE["text"]
+        )
+        self.preset_menu.pack(side="left", fill="x", expand=True)
+
+        # Credentials Row
+        creds_grid = ctk.CTkFrame(self.rtsp_card, fg_color="transparent")
+        creds_grid.pack(fill="x", padx=12, pady=4)
+        creds_grid.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkLabel(creds_grid, text="RTSP Username", font=("Segoe UI", 10), text_color=self.PALETTE["muted"]).grid(row=0, column=0, sticky="w", padx=2)
+        self.entry_user = ctk.CTkEntry(creds_grid, textvariable=self.user_var, placeholder_text="Username", height=30, corner_radius=6)
+        self.entry_user.grid(row=1, column=0, sticky="ew", padx=(0, 6), pady=(2, 6))
+
+        pass_lbl_frame = ctk.CTkFrame(creds_grid, fg_color="transparent")
+        pass_lbl_frame.grid(row=0, column=1, sticky="ew", padx=2)
+        ctk.CTkLabel(pass_lbl_frame, text="RTSP Password", font=("Segoe UI", 10), text_color=self.PALETTE["muted"]).pack(side="left")
+        
+        self.btn_toggle_pass = ctk.CTkCheckBox(
+            pass_lbl_frame,
+            text="Show",
+            variable=self.show_pass_var,
+            command=self._toggle_password_mask,
+            font=("Segoe UI", 10),
+            checkbox_width=16,
+            checkbox_height=16,
+            text_color=self.PALETTE["muted"]
+        )
+        self.btn_toggle_pass.pack(side="right")
+
+        self.entry_pass = ctk.CTkEntry(creds_grid, textvariable=self.pass_var, placeholder_text="Password", height=30, corner_radius=6, show="•")
+        self.entry_pass.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(2, 6))
+
+        # Host, Port, Path Grid
+        addr_grid = ctk.CTkFrame(self.rtsp_card, fg_color="transparent")
+        addr_grid.pack(fill="x", padx=12, pady=(0, 10))
+        addr_grid.grid_columnconfigure(0, weight=3)
+        addr_grid.grid_columnconfigure(1, weight=1)
+        addr_grid.grid_columnconfigure(2, weight=2)
+
+        ctk.CTkLabel(addr_grid, text="IP / Hostname", font=("Segoe UI", 10), text_color=self.PALETTE["muted"]).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(addr_grid, text="Port", font=("Segoe UI", 10), text_color=self.PALETTE["muted"]).grid(row=0, column=1, sticky="w", padx=6)
+        ctk.CTkLabel(addr_grid, text="RTSP Stream Path", font=("Segoe UI", 10), text_color=self.PALETTE["muted"]).grid(row=0, column=2, sticky="w")
+
+        self.entry_ip = ctk.CTkEntry(addr_grid, textvariable=self.ip_var, placeholder_text="192.168.1.100", height=30, corner_radius=6)
+        self.entry_ip.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
+        self.entry_port = ctk.CTkEntry(addr_grid, textvariable=self.port_var, placeholder_text="554", height=30, corner_radius=6)
+        self.entry_port.grid(row=1, column=1, sticky="ew", padx=6, pady=(2, 0))
+
+        self.entry_path = ctk.CTkEntry(addr_grid, textvariable=self.path_var, placeholder_text="/stream1", height=30, corner_radius=6)
+        self.entry_path.grid(row=1, column=2, sticky="ew", pady=(2, 0))
+
+        # 4. USB Webcam Options Group (Initially hidden or shown based on segmented)
+        self.usb_card = ctk.CTkFrame(form_scroll, fg_color=self.PALETTE["card_subtle"], corner_radius=10, border_width=1, border_color=self.PALETTE["border"])
+        # Initially unpacked; shown when USB Webcam is active
+
+        usb_inner = ctk.CTkFrame(self.usb_card, fg_color="transparent")
+        usb_inner.pack(fill="x", padx=12, pady=10)
+
+        ctk.CTkLabel(usb_inner, text="Connected Video Device Index:", font=("Segoe UI Semibold", 10), text_color=self.PALETTE["muted"]).pack(anchor="w", pady=(0, 4))
+        
+        usb_controls = ctk.CTkFrame(usb_inner, fg_color="transparent")
+        usb_controls.pack(fill="x")
+
+        self.usb_combo = ctk.CTkComboBox(
+            usb_controls,
+            values=["0", "1", "2", "3"],
+            height=30,
+            corner_radius=6,
+            command=lambda v: self.source_var.set(v)
+        )
+        self.usb_combo.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.btn_scan_usb = ctk.CTkButton(
+            usb_controls,
+            text="Scan Devices",
+            width=90,
+            height=30,
+            corner_radius=6,
+            fg_color=self.PALETTE["border"],
+            hover_color=self.PALETTE["accent_hover"],
+            font=("Segoe UI", 11),
+            command=self._scan_local_cameras
+        )
+        self.btn_scan_usb.pack(side="right")
+
+        # 5. Full Source URI Field & Build Action
+        src_row = ctk.CTkFrame(form_scroll, fg_color="transparent")
+        src_row.pack(fill="x", pady=(2, 2))
+
+        ctk.CTkLabel(src_row, text="Active Video Source URI / Path", font=("Segoe UI Semibold", 11), text_color=self.PALETTE["muted"]).pack(side="left")
+        
+        self.btn_build_url = ctk.CTkButton(
+            src_row,
+            text="Auto-Build URI",
+            width=90,
+            height=22,
+            corner_radius=5,
+            fg_color=self.PALETTE["border"],
+            hover_color=self.PALETTE["accent_hover"],
+            font=("Segoe UI", 10),
+            command=self._build_rtsp_url
+        )
+        self.btn_build_url.pack(side="right")
+
+        self.entry_src = ctk.CTkComboBox(
+            form_scroll,
+            variable=self.source_var,
+            values=["rtsp://..."],
+            height=34,
+            corner_radius=8
+        )
+        self.entry_src.pack(fill="x", pady=(2, 10))
+
+        # 6. Live Stream Verification & Diagnostic Engine
+        probe_card = ctk.CTkFrame(form_scroll, fg_color=self.PALETTE["card_subtle"], corner_radius=10, border_width=1, border_color=self.PALETTE["border"])
+        probe_card.pack(fill="x", pady=(0, 12))
+
+        probe_inner = ctk.CTkFrame(probe_card, fg_color="transparent")
+        probe_inner.pack(fill="x", padx=12, pady=10)
+
+        probe_top = ctk.CTkFrame(probe_inner, fg_color="transparent")
+        probe_top.pack(fill="x")
+
+        self.btn_test = ctk.CTkButton(
+            probe_top,
+            text="⚡ Test Stream Connection",
+            height=30,
+            corner_radius=6,
+            fg_color=self.PALETTE["border"],
+            hover_color=self.PALETTE["accent_hover"],
+            text_color=self.PALETTE["text"],
+            font=("Segoe UI Semibold", 11),
+            command=self._test_stream_connection
+        )
+        self.btn_test.pack(side="left")
+
+        self.lbl_probe_status = ctk.CTkLabel(
+            probe_inner,
+            text="Ready to verify stream handshake (3.0s timeout)",
+            font=("Segoe UI", 10),
+            text_color=self.PALETTE["muted"],
+            anchor="w"
+        )
+        self.lbl_probe_status.pack(fill="x", pady=(6, 0))
+
+        # 7. Form Action Buttons (Save / Clear)
+        right_bot = ctk.CTkFrame(right_card, fg_color="transparent")
+        right_bot.grid(row=2, column=0, sticky="ew", padx=14, pady=(8, 14))
+
+        self.btn_save = ctk.CTkButton(
+            right_bot,
+            text="Add Camera",
+            height=36,
+            corner_radius=8,
+            fg_color=self.PALETTE["accent"],
+            hover_color=self.PALETTE["accent_hover"],
+            font=("Segoe UI Semibold", 12),
+            command=self._save_camera
+        )
+        self.btn_save.pack(side="right", padx=(8, 0))
+
+        self.btn_clear = ctk.CTkButton(
+            right_bot,
+            text="Clear Form",
+            height=36,
+            corner_radius=8,
+            fg_color=self.PALETTE["card_subtle"],
+            hover_color=self.PALETTE["border"],
+            text_color=self.PALETTE["text"],
+            border_width=1,
+            border_color=self.PALETTE["border"],
+            font=("Segoe UI Semibold", 11),
+            command=self._clear_form
+        )
+        self.btn_clear.pack(side="right")
+
+    def _apply_appearance(self):
+        is_light = ctk.get_appearance_mode() == "Light"
+        bg_col = "#ffffff" if is_light else "#131b24"
+        fg_col = "#0f172a" if is_light else "#f1f5f9"
+        border_col = "#cbd5e1" if is_light else "#223244"
+        head_bg = "#f1f5f9" if is_light else "#182330"
+
+        style = ttk.Style()
+        style.configure(
+            "Cams.Treeview",
+            background=bg_col,
+            foreground=fg_col,
+            fieldbackground=bg_col,
+            bordercolor=border_col,
+            rowheight=28
+        )
+        style.configure(
+            "Cams.Treeview.Heading",
+            background=head_bg,
+            foreground=fg_col,
+            bordercolor=border_col
+        )
+        style.map("Cams.Treeview", background=[("selected", "#1d4ed8" if is_light else "#4f84bb")])
+
+    def _on_protocol_change(self, choice):
+        if choice == "USB Webcam":
+            self.rtsp_card.pack_forget()
+            self.usb_card.pack(fill="x", pady=(0, 10))
+            if not self.source_var.get() or self.source_var.get().startswith("rtsp"):
+                self.source_var.set("0")
+        else:
+            self.usb_card.pack_forget()
+            self.rtsp_card.pack(fill="x", pady=(0, 10))
+            if self.source_var.get().isdigit():
+                self._build_rtsp_url()
+
+    def _on_preset_selected(self, choice):
+        if "Tapo" in choice:
+            self.path_var.set("/stream1")
+            self.port_var.set("554")
+        elif "Hikvision" in choice:
+            self.path_var.set("/Streaming/Channels/101")
+            self.port_var.set("554")
+        elif "Dahua" in choice:
+            self.path_var.set("/cam/realmonitor?channel=1&subtype=0")
+            self.port_var.set("554")
+        elif "ONVIF" in choice:
+            self.path_var.set("/live/ch0")
+            self.port_var.set("554")
+        self._build_rtsp_url()
+
+    def _toggle_password_mask(self):
+        if self.show_pass_var.get():
+            self.entry_pass.configure(show="")
+        else:
+            self.entry_pass.configure(show="•")
+
+    def _test_stream_connection(self):
+        if self._is_testing_connection:
+            return
+
+        self._build_rtsp_url()
+        src = self.source_var.get().strip()
+        if not src:
+            self.lbl_probe_status.configure(
+                text="✖ Please enter a source address or select a webcam device.",
+                text_color=self.PALETTE["danger"]
+            )
+            return
+
+        self._is_testing_connection = True
+        self.btn_test.configure(state="disabled")
+        self.lbl_probe_status.configure(
+            text="⏳ Probing stream handshake (opening video stream)...",
+            text_color=self.PALETTE["accent"]
+        )
+
+        import threading
+        def _probe_worker():
+            import cv2
+            import time
+            success = False
+            details = ""
+            cap = None
+            try:
+                # Local device or RTSP stream
+                if src.isdigit():
+                    device_idx = int(src)
+                    cap = cv2.VideoCapture(device_idx, cv2.CAP_DSHOW)
+                else:
+                    cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+                
+                # Check opening and grab a single test frame
+                start_t = time.time()
+                while time.time() - start_t < 3.0:
+                    if cap.isOpened():
+                        ret, frame = cap.read()
+                        if ret and frame is not None:
+                            h, w = frame.shape[:2]
+                            fps = cap.get(cv2.CAP_PROP_FPS)
+                            fps_str = f"{int(fps)}" if fps > 0 else "25-30"
+                            success = True
+                            details = f"✔ Stream Verified: {w}x{h} @ {fps_str} FPS (Handshake OK)"
+                            break
+                    time.sleep(0.1)
+
+                if not success:
+                    details = "✖ Connection Failed: Stream timed out or host unreachable"
+            except Exception as e:
+                details = f"✖ Connection Error: {str(e)[:45]}"
+            finally:
+                if cap is not None:
+                    # Release in background thread to avoid blocking GUI
+                    def _rel(c):
+                        try: c.release()
+                        except: pass
+                    threading.Thread(target=_rel, args=(cap,), daemon=True).start()
+
+            def _update_ui():
+                self._is_testing_connection = False
+                self.btn_test.configure(state="normal")
+                self.lbl_probe_status.configure(
+                    text=details,
+                    text_color=self.PALETTE["success"] if success else self.PALETTE["danger"]
+                )
+
+            self.after(0, _update_ui)
+
+        threading.Thread(target=_probe_worker, daemon=True).start()
+
+    def _renumber_cameras(self):
+        profile_store.normalize_camera_ids()
+        self._load_cameras()
+        self._clear_form()
+        self.on_refresh()
+        messagebox.showinfo("Renumbered", "Camera IDs have been normalized sequentially from 1 to N.")
 
     def close_and_refresh(self):
+        profile_store.normalize_camera_ids()
         self.on_refresh()
-        self.grab_release()
+        try:
+            self.grab_release()
+        except Exception:
+            pass
         self.destroy()
 
     def _load_cameras(self):
-        for i in self.tree.get_children(): self.tree.delete(i)
+        profile_store.normalize_camera_ids()
+        for i in self.tree.get_children():
+            self.tree.delete(i)
         cams = profile_store.list_cameras()
+        count = len(cams)
+        self.lbl_capacity_badge.configure(text=f"{count} / 4 CHANNELS CONFIGURED")
+
         for c in cams:
-            self.tree.insert("", "end", iid=str(c["camera_id"]), values=(c["camera_id"], c["name"], c["source"]))
+            src = c["source"]
+            is_rtsp = str(src).lower().startswith("rtsp://")
+            stream_type = "RTSP" if is_rtsp else "USB"
+            self.tree.insert(
+                "",
+                "end",
+                iid=str(c["camera_id"]),
+                values=(c["camera_id"], c["name"], stream_type, src)
+            )
 
     def _scan_local_cameras(self):
-        self.entry_src.configure(values=["Scanning..."])
+        self.entry_src.configure(values=["Scanning local devices..."])
         import threading
         def _scan():
             import cv2
@@ -267,17 +773,46 @@ class CameraManagementDialog(ctk.CTkToplevel):
     def _update_source_combobox(self, available):
         opts = available + ["rtsp://<ip>:<port>/stream"]
         self.entry_src.configure(values=opts)
+        self.usb_combo.configure(values=available if available else ["0"])
         if available and not self.source_var.get():
             self.source_var.set(available[0])
 
     def _on_select(self, _):
         sel = self.tree.selection()
-        if not sel: return
+        if not sel:
+            return
         self.selected_cam_id = int(sel[0])
         val = self.tree.item(sel[0])["values"]
-        self.name_var.set(val[1])
-        self.source_var.set(val[2])
-        self.btn_save.configure(text="Update Camera")
+        cam_name = str(val[1])
+        cam_src = str(val[3])
+
+        self.name_var.set(cam_name)
+        self.source_var.set(cam_src)
+        self.btn_save.configure(text="Update Channel")
+        self.lbl_channel_tag.configure(text=f"EDITING CAM {self.selected_cam_id}")
+
+        if cam_src.isdigit():
+            self.proto_segmented.set("USB Webcam")
+            self._on_protocol_change("USB Webcam")
+            self.usb_combo.set(cam_src)
+        else:
+            self.proto_segmented.set("RTSP Stream")
+            self._on_protocol_change("RTSP Stream")
+            self._parse_rtsp_url(cam_src)
+
+    def _parse_rtsp_url(self, url):
+        # Best-effort parse of rtsp://user:pass@host:port/path
+        try:
+            from urllib.parse import urlparse, unquote
+            p = urlparse(url)
+            if p.scheme == "rtsp":
+                if p.username: self.user_var.set(unquote(p.username))
+                if p.password: self.pass_var.set(unquote(p.password))
+                if p.hostname: self.ip_var.set(p.hostname)
+                if p.port: self.port_var.set(str(p.port))
+                if p.path: self.path_var.set(p.path)
+        except Exception:
+            pass
 
     def _clear_form(self):
         self.selected_cam_id = None
@@ -285,23 +820,30 @@ class CameraManagementDialog(ctk.CTkToplevel):
         self.source_var.set("")
         self.ip_var.set("")
         self.port_var.set("554")
-        self.path_var.set("/stream")
+        self.path_var.set("/stream1")
         self.user_var.set("")
         self.pass_var.set("")
+        self.preset_var.set("Custom")
         self.btn_save.configure(text="Add Camera")
+        self.lbl_channel_tag.configure(text="NEW CHANNEL")
+        self.lbl_probe_status.configure(
+            text="Ready to verify stream handshake (3.0s timeout)",
+            text_color=self.PALETTE["muted"]
+        )
         self.tree.selection_remove(self.tree.selection())
 
     def _build_rtsp_url(self):
         from urllib.parse import quote
         ip = self.ip_var.get().strip()
         port = self.port_var.get().strip() or "554"
-        path = self.path_var.get().strip()
+        path = self.path_var.get().strip() or "/stream1"
         user = self.user_var.get().strip()
         pw = self.pass_var.get().strip()
-        if not path.startswith("/"): path = "/" + path
+
+        if not path.startswith("/"):
+            path = "/" + path
+
         if ip:
-            # Embed credentials as rtsp://user:pass@host, URL-encoding reserved
-            # chars (e.g. '@' in an email username must become %40).
             auth = ""
             if user:
                 auth = quote(user, safe="")
@@ -315,22 +857,21 @@ class CameraManagementDialog(ctk.CTkToplevel):
                 self.entry_src.configure(values=vals)
             self.source_var.set(url)
 
-
     def _save_camera(self):
-        name = self.name_var.get()
-        src = self.source_var.get()
+        name = self.name_var.get().strip()
+        src = self.source_var.get().strip()
         if not name or not src:
-            messagebox.showwarning("Incomplete", "Please provide both name and source.")
+            messagebox.showwarning("Incomplete", "Please provide both camera name and video source.")
             return
-        
+
         # Check for duplicate source
         existing = profile_store.list_cameras()
         for cam in existing:
             if cam["source"] == src and cam["camera_id"] != self.selected_cam_id:
                 messagebox.showwarning(
                     "Duplicate Source",
-                    f"Source '{src}' is already used by camera '{cam['name']}'.\n"
-                    "Two cameras cannot share the same device index or URL."
+                    f"Source '{src}' is already assigned to camera '{cam['name']}'.\n"
+                    "Multiple cameras cannot share the exact same hardware device or stream URI."
                 )
                 return
 
@@ -339,7 +880,7 @@ class CameraManagementDialog(ctk.CTkToplevel):
                 profile_store.update_camera(self.selected_cam_id, name, src)
             else:
                 profile_store.add_camera(name, src)
-            
+
             self._load_cameras()
             self._clear_form()
             self.on_refresh()
@@ -347,9 +888,13 @@ class CameraManagementDialog(ctk.CTkToplevel):
             messagebox.showerror("Error", str(e))
 
     def _delete_camera(self):
-        if not self.selected_cam_id: return
-        if not messagebox.askyesno("Confirm", "Remove this camera input?"): return
-        
+        if not self.selected_cam_id:
+            messagebox.showinfo("Select Channel", "Please select a camera channel from the list to remove.")
+            return
+
+        if not messagebox.askyesno("Confirm Removal", f"Remove camera channel ID {self.selected_cam_id} from monitoring network?"):
+            return
+
         try:
             profile_store.delete_camera(self.selected_cam_id)
             self._load_cameras()
@@ -378,6 +923,10 @@ class CameraMonitorScreen(ttk.Frame):
         self._alert_banner_visible = False
         self._alert_thumb_photo = None
         self._alert_auto_dismiss_job = None
+        self._is_monitoring = False
+        self._connecting = False
+        self._connect_thread = None
+        self._poll_connecting_job = None
 
         self.create_widgets()
 
@@ -509,14 +1058,23 @@ class CameraMonitorScreen(ttk.Frame):
 
     def _on_incident_alert(self, camera_id, incident_id, event_type, frame=None, ai_results=None, severity=None, **kwargs):
         """EventBus callback for confirmed incidents"""
-        self.after(0, lambda: self._show_alert_banner(camera_id, incident_id, event_type, frame, severity=severity))
+        try:
+            if self.winfo_exists() and getattr(self, "_is_monitoring", False):
+                self.after_idle(lambda c=camera_id, i=incident_id, e=event_type, f=frame, s=severity: self._show_alert_banner(c, i, e, f, severity=s))
+        except Exception:
+            pass
 
     def _on_decision_alert(self, camera_id, event_type, confidence_scores=None, frame=None, ai_results=None, severity=None, **kwargs):
         """EventBus callback for fast preliminary decision triggers"""
-        self.after(0, lambda: self._show_alert_banner(camera_id, getattr(self, "active_alert_incident_id", None), event_type, frame, confidence_scores, severity=severity))
+        try:
+            if self.winfo_exists() and getattr(self, "_is_monitoring", False):
+                self.after_idle(lambda c=camera_id, i=getattr(self, "active_alert_incident_id", None), e=event_type, f=frame, sc=confidence_scores, s=severity: self._show_alert_banner(c, i, e, f, sc, severity=s))
+        except Exception:
+            pass
 
     def _show_alert_banner(self, camera_id, incident_id, event_type, frame=None, scores=None, severity=None):
-        self.active_alert_incident_id = incident_id
+        if incident_id:
+            self.active_alert_incident_id = incident_id
         
         # Format title & subtitle with threshold indicators & severity
         sev_tag = f" [{severity}]" if severity else ""
@@ -563,8 +1121,25 @@ class CameraMonitorScreen(ttk.Frame):
     def _review_active_incident(self):
         """Jump to Incidents screen with the current active alert incident loaded."""
         root = self.winfo_toplevel()
+        target_id = getattr(self, "active_alert_incident_id", None)
+        if not target_id:
+            try:
+                import os
+                import sqlite3
+                from monitor_app.utils import data_path
+                db = data_path("incidents.db")
+                if os.path.exists(db):
+                    conn = sqlite3.connect(db)
+                    c = conn.cursor()
+                    c.execute("SELECT event_id FROM incidents ORDER BY timestamp_start DESC LIMIT 1")
+                    row = c.fetchone()
+                    conn.close()
+                    if row:
+                        target_id = row[0]
+            except Exception as e:
+                logger.error(f"Failed to fetch latest incident for review: {e}")
         if hasattr(root, "switch_screen"):
-            root.switch_screen("Incidents", initial_incident_id=self.active_alert_incident_id)
+            root.switch_screen("Incidents", initial_incident_id=target_id)
 
     def _poll_engine_ready(self):
         from monitor_app.central_inference import get_inference_manager
@@ -635,9 +1210,10 @@ class CameraMonitorScreen(ttk.Frame):
         from monitor_app.central_inference import get_inference_manager
         get_inference_manager().start()
         
+        self._is_monitoring = True
+        self._connecting = True
         self._show_connecting_overlay()
         
-        from concurrent.futures import ThreadPoolExecutor
         import threading
         
         def connect_camera(cam):
@@ -646,17 +1222,30 @@ class CameraMonitorScreen(ttk.Frame):
 
         def connect_all():
             if self.cameras:
-                with ThreadPoolExecutor(max_workers=len(self.cameras)) as executor:
-                    futures = {executor.submit(connect_camera, cam): cam for cam in self.cameras}
-                    for future in futures:
-                        try:
-                            future.result()
-                        except Exception as e:
-                            print(f"[Camera] Failed to connect {futures[future]}: {e}")
-            self.after(0, self._hide_connecting_overlay)
-            self.after(0, self._refresh_camera_widgets)
+                import time
+                for cam in list(self.cameras):
+                    if not getattr(self, "_is_monitoring", False):
+                        break
+                    try:
+                        connect_camera(cam)
+                    except Exception as e:
+                        print(f"[Camera] Failed to connect {cam}: {e}")
+                    time.sleep(0.08)  # 80ms stagger prevents USB bus contention
+            self._connecting = False
             
-        threading.Thread(target=connect_all, daemon=True).start()
+        self._connect_thread = threading.Thread(target=connect_all, daemon=True)
+        self._connect_thread.start()
+        self._poll_connecting_status()
+
+    def _poll_connecting_status(self):
+        if not self.winfo_exists() or not getattr(self, "_is_monitoring", False):
+            self._hide_connecting_overlay()
+            return
+        if not getattr(self, "_connecting", True):
+            self._hide_connecting_overlay()
+            self._refresh_camera_widgets()
+        else:
+            self._poll_connecting_job = self.after(100, self._poll_connecting_status)
 
     def _show_connecting_overlay(self):
         if not hasattr(self, 'loading_overlay') or not self.loading_overlay.winfo_exists():
@@ -679,17 +1268,31 @@ class CameraMonitorScreen(ttk.Frame):
         pass
 
     def stop_monitoring(self):
+        self._is_monitoring = False
+        self._connecting = False
+        if hasattr(self, "_poll_connecting_job") and self._poll_connecting_job:
+            try:
+                self.after_cancel(self._poll_connecting_job)
+            except Exception:
+                pass
+            self._poll_connecting_job = None
+        if self._alert_auto_dismiss_job:
+            try:
+                self.after_cancel(self._alert_auto_dismiss_job)
+            except Exception:
+                pass
+            self._alert_auto_dismiss_job = None
         try:
             from monitor_app.events import get_event_bus
             get_event_bus().unsubscribe("INCIDENT_START", self._on_incident_alert)
             get_event_bus().unsubscribe("DECISION_TRIGGER", self._on_decision_alert)
         except Exception:
             pass
-        if self._alert_auto_dismiss_job:
-            self.after_cancel(self._alert_auto_dismiss_job)
-            self._alert_auto_dismiss_job = None
         for cam in self.cameras:
             cam.stop()
+        if hasattr(self, "_connect_thread") and self._connect_thread and self._connect_thread.is_alive():
+            self._connect_thread.join(timeout=1.5)
+            self._connect_thread = None
         from monitor_app.central_inference import get_inference_manager
         get_inference_manager().stop()
 
@@ -761,11 +1364,16 @@ class CameraFeedWidget(ttk.Frame):
         
         # Incident detection & recording logic
         self.recorder = IncidentRecorder(self.camera_id)
+        self.last_alert_triggered = False
+        self.last_alert_desc = ""
+        self.is_offline = False
+        self.is_stopped = False
         
         # Local CPU motion gating
         self.gater = LocalMotionGater()
 
         self.setup_ui()
+        self.after(50, self.update_loop)
 
     def setup_ui(self):
         self.pack_propagate(False)
@@ -827,24 +1435,26 @@ class CameraFeedWidget(ttk.Frame):
         
         # Track active cameras globally
         utils.GlobalState.register_camera(self.camera_id)
-        self.after(0, self.update_loop)
 
     def _open_capture(self):
         """Open (or reopen) the video capture with fallback backends."""
+        if self.cap_thread and self.cap_thread.is_alive():
+            logger.info(f"Waiting for old capture thread of camera {self.camera_id} to exit...", camera_id=self.camera_id)
+            self.cap_thread.join(timeout=1.0)
+            self.cap_thread = None
+
         if self.cap:
             old_cap = self.cap
             self.cap = None
-            threading.Thread(target=lambda c: c.release(), args=(old_cap,), daemon=True).start()
-
-        if self.cap_thread and self.cap_thread.is_alive():
-            logger.info(f"Waiting for old capture thread of camera {self.camera_id} to exit...", camera_id=self.camera_id)
-            self.cap_thread.join(timeout=3.0)
-            self.cap_thread = None
+            try:
+                old_cap.release()
+            except Exception:
+                pass
 
         src = self.source
-        # Try MSMF first (Windows default), then DirectShow fallback
+        # For integer webcams, prefer DSHOW on Windows because it releases cleanly and avoids MSMF device locks
         if isinstance(src, int):
-            backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
+            backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
         else:
             backends = [cv2.CAP_FFMPEG, cv2.CAP_ANY]
         
@@ -869,6 +1479,12 @@ class CameraFeedWidget(ttk.Frame):
                         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     else:
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                    # Probe read: verify the device handle actually yields valid frames
+                    test_ret, test_frame = cap.read()
+                    if not test_ret or test_frame is None or getattr(test_frame, "size", 0) == 0:
+                        cap.release()
+                        continue
                         
                     self.cap = cap
                     self._consecutive_failures = 0
@@ -910,14 +1526,7 @@ class CameraFeedWidget(ttk.Frame):
             except Exception as e:
                 print(f"Camera {self.camera_id} backend {backend} failed: {e}")
         print(f"Camera {self.camera_id}: could not open source '{src}'")
-        
-        def _set_offline():
-            try:
-                self.lbl_status.configure(text="OFFLINE", foreground="#f25c5c")
-                self.draw_placeholder("Offline")
-            except Exception:
-                pass
-        self.after(0, _set_offline)
+        self.is_offline = True
 
     def _capture_thread_loop(self, cap, q):
         while self.running and self.cap == cap:
@@ -939,7 +1548,8 @@ class CameraFeedWidget(ttk.Frame):
                 if not ret:
                     break
             except Exception as e:
-                print(f"Capture thread exception (Cam {self.camera_id}): {e}")
+                if self.running:
+                    print(f"Capture thread exception (Cam {self.camera_id}): {e}")
                 try:
                     q.put_nowait((False, None))
                 except Exception:
@@ -983,11 +1593,18 @@ class CameraFeedWidget(ttk.Frame):
                 # Once we successfully retrieve a frame, we are no longer in reconnect status
                 self.is_reconnecting = False
             except queue.Empty:
+                if not self.running:
+                    break
                 logger.warning(f"Camera {self.camera_id} read watchdog triggered (no frames for 2.5s). Stalling connection.", camera_id=self.camera_id)
                 ret = False
                 raw_frame = None
 
+            if not self.running:
+                break
+
             if not ret or raw_frame is None or getattr(raw_frame, 'size', 0) == 0:
+                if not self.running:
+                    break
                 self._consecutive_failures += 1
                 self.is_reconnecting = True
                 if self.cap:
@@ -1075,10 +1692,6 @@ class CameraFeedWidget(ttk.Frame):
                     cam_self = self  # capture reference for callback closure
                     def _on_inference_complete(result_packet, _cam_self=cam_self, _bfidx=benchmark_frame_idx):
                         try:
-                            # Drop backpressure frames silently so canvas retains the last valid annotated frame
-                            if getattr(result_packet, "processing_mode", None) == "Queue Drop (Backpressure)":
-                                return
-
                             frame_to_show = result_packet.frame
                             alert_active = result_packet.alert_triggered
                             
@@ -1090,15 +1703,17 @@ class CameraFeedWidget(ttk.Frame):
                             rgb = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB)
                             img_pil = Image.fromarray(rgb)
                             
+                            alert_desc = result_packet.alerts[0] if (getattr(result_packet, "alerts", None) and len(result_packet.alerts) > 0) else ""
                             if _cam_self.result_queue.full():
                                 try:
                                     _cam_self.result_queue.get_nowait()
                                 except queue.Empty:
                                     pass
-                            _cam_self.result_queue.put((img_pil, alert_active))
+                            _cam_self.result_queue.put((img_pil, alert_active, alert_desc))
                             
-                            # Incident recording
-                            _cam_self.recorder.process_frame(frame_to_show, result_packet.to_dict())
+                            # Incident recording (only process full inference frames)
+                            if getattr(result_packet, "processing_mode", None) != "Queue Drop (Backpressure)":
+                                _cam_self.recorder.process_frame(frame_to_show, result_packet.to_dict())
                         except Exception as e:
                             print(f"Async callback error (Cam {_cam_self.camera_id}): {e}")
                     
@@ -1197,14 +1812,75 @@ class CameraFeedWidget(ttk.Frame):
 
     def stop(self):
         self.running = False
+        self.is_stopped = True
+        try:
+            self.frame_queue.put_nowait((False, None))
+        except Exception:
+            pass
+
+        # Join capture thread first so native read loop terminates
+        if self.cap_thread and self.cap_thread.is_alive():
+            self.cap_thread.join(timeout=0.5)
+
+        # Release capture handle cleanly
         if self.cap:
-            self.cap.release()
+            old_cap = self.cap
             self.cap = None
+            if self.cap_thread and self.cap_thread.is_alive():
+                # Cap thread still finishing a blocking read; let it finish then release
+                def _safe_release(c, ct):
+                    try:
+                        ct.join(timeout=1.5)
+                        c.release()
+                    except Exception:
+                        pass
+                threading.Thread(target=_safe_release, args=(old_cap, self.cap_thread), daemon=True).start()
+            else:
+                try:
+                    old_cap.release()
+                except Exception as e:
+                    logger.debug(f"Error releasing capture on camera {self.camera_id}: {e}")
+            self.cap_thread = None
+
+        # Join worker thread
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=0.5)
+            self.worker_thread = None
+
+        # Cleanly finalize and close incident recorder
+        if hasattr(self, "recorder") and self.recorder:
+            try:
+                self.recorder.close()
+            except Exception as e:
+                logger.error(f"Error closing recorder for camera {self.camera_id}: {e}")
+
+        # Drain queues
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        while not self.result_queue.empty():
+            try:
+                self.result_queue.get_nowait()
+            except queue.Empty:
+                break
+
         # AlertManager and IncidentRecorder are loosely coupled via EventBus
         utils.GlobalState.unregister_camera(self.camera_id)
 
     def update_loop(self):
+        if getattr(self, "is_stopped", False) or not self.winfo_exists():
+            return
+
         if not self.running:
+            self.after(50, self.update_loop)
+            return
+
+        if getattr(self, "is_offline", False):
+            self.lbl_status.configure(text="OFFLINE", foreground="#f25c5c")
+            self.draw_placeholder("Offline")
+            self.after(self.ui_frame_interval_ms, self.update_loop)
             return
 
         frame_rgb = None
@@ -1214,13 +1890,18 @@ class CameraFeedWidget(ttk.Frame):
         if self.source is not None:
             try:
                 # Try to get latest from worker (non-blocking)
-                rgb_data, alert_triggered = self.result_queue.get_nowait()
-                frame_rgb = rgb_data
+                item = self.result_queue.get_nowait()
+                if len(item) == 3:
+                    frame_rgb, alert_triggered, alert_desc = item
+                else:
+                    frame_rgb, alert_triggered = item
+                    alert_desc = ""
+                self.last_alert_triggered = bool(alert_triggered)
+                if alert_triggered and alert_desc:
+                    self.last_alert_desc = alert_desc
             except queue.Empty:
                 # If no new frame from worker, just continue with old or skip
                 frame_rgb = None
-                # We don't return here so we don't break the loop, 
-                # but we'll skip the drawing block if frame_rgb is None
                 pass
             
             # Special case for "Signal Lost" or "Reconnecting" handled by worker not putting data
@@ -1291,20 +1972,31 @@ class CameraFeedWidget(ttk.Frame):
 
 
         # --- status ---
-        # Show status from the recorder (NORMAL, RECORDING, or COOLDOWN)
-        status_text, status_color = self.recorder.get_status_info()
-        self.lbl_status.configure(text=status_text, foreground=status_color)
-        
-        # Dynamically highlight card canvas border based on state
+        # Show status from recorder or active AI detection
+        rec_status, rec_color = self.recorder.get_status_info()
         if self.recorder.state == self.recorder.RECORDING:
+            status_text = rec_status
+            status_color = rec_color
             self.canvas.configure(highlightthickness=3, highlightbackground="#f25c5c")
+            utils.GlobalState.set_alert(self.camera_id, True)
         elif self.recorder.state == self.recorder.COOLDOWN:
+            status_text = rec_status
+            status_color = rec_color
             self.canvas.configure(highlightthickness=2, highlightbackground="#ffa500")
+            utils.GlobalState.set_alert(self.camera_id, False)
+        elif getattr(self, "last_alert_triggered", False):
+            tag = f": {self.last_alert_desc}" if getattr(self, "last_alert_desc", "") else ""
+            status_text = f"ALERT{tag}"
+            status_color = "#f25c5c"
+            self.canvas.configure(highlightthickness=2, highlightbackground="#f25c5c")
+            utils.GlobalState.set_alert(self.camera_id, True)
         else:
+            status_text = "NORMAL"
+            status_color = utils.COLOR_SUCCESS
             self.canvas.configure(highlightthickness=1, highlightbackground="#1e2c3a")
-        
-        # Update global alert state
-        utils.GlobalState.set_alert(self.camera_id, self.recorder.state == self.recorder.RECORDING)
+            utils.GlobalState.set_alert(self.camera_id, False)
+
+        self.lbl_status.configure(text=status_text, foreground=status_color)
 
         self.after(self.ui_frame_interval_ms, self.update_loop)  # Target ~30 FPS for UI responsiveness
 

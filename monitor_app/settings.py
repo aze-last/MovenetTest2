@@ -460,15 +460,18 @@ class SettingsScreen(ctk.CTkFrame):
             }
         }
 
-        # Dropdown for profile selection
+        # Dropdown for profile selection & Upper Action Toolbar
         profile_frame = ctk.CTkFrame(group, fg_color="transparent")
         profile_frame.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 10))
         
-        ctk.CTkLabel(profile_frame, text="Active Detection Profile", font=("Segoe UI Semibold", 13), text_color=PALETTE["muted"]).pack(side="left", padx=(0, 10))
+        prof_left = ctk.CTkFrame(profile_frame, fg_color="transparent")
+        prof_left.pack(side="left")
+
+        ctk.CTkLabel(prof_left, text="Active Detection Profile", font=("Segoe UI Semibold", 13), text_color=PALETTE["muted"]).pack(side="left", padx=(0, 10))
         
         self.profile_var = tk.StringVar(value="Medium")
         self.profile_menu = ctk.CTkOptionMenu(
-            profile_frame,
+            prof_left,
             variable=self.profile_var,
             values=["High", "Medium", "Low", "Custom"],
             width=140,
@@ -485,6 +488,54 @@ class SettingsScreen(ctk.CTkFrame):
         )
         self.profile_menu.pack(side="left")
         self.admin_only_widgets.append(self.profile_menu)
+
+        # Upper action toolbar (Immediately accessible without scrolling down)
+        actions_bar = ctk.CTkFrame(profile_frame, fg_color="transparent")
+        actions_bar.pack(side="right")
+
+        self.monitoring_save_button = ctk.CTkButton(
+            actions_bar,
+            text="Save AI Preferences",
+            font=("Segoe UI Semibold", 12),
+            fg_color=PALETTE["success"],
+            hover_color=PALETTE["success_hover"],
+            text_color=PALETTE["page"],
+            height=36,
+            corner_radius=8,
+            command=self.save_settings
+        )
+        self.monitoring_save_button.pack(side="right")
+        self.admin_only_widgets.append(self.monitoring_save_button)
+
+        self.btn_manage_cams = ctk.CTkButton(
+            actions_bar,
+            text="Manage Camera Network",
+            font=("Segoe UI Semibold", 12),
+            fg_color=PALETTE["accent"],
+            hover_color=PALETTE["accent_hover"],
+            text_color=PALETTE["page"],
+            height=36,
+            corner_radius=8,
+            command=self._open_camera_management
+        )
+        self.btn_manage_cams.pack(side="right", padx=(0, 8))
+        self.admin_only_widgets.append(self.btn_manage_cams)
+
+        self.monitoring_reset_button = ctk.CTkButton(
+            actions_bar,
+            text="Reset Custom to Medium",
+            font=("Segoe UI Semibold", 12),
+            fg_color=PALETTE["card_soft"],
+            hover_color=PALETTE["panel_alt"],
+            text_color=PALETTE["text"],
+            height=36,
+            corner_radius=8,
+            border_width=1,
+            border_color=PALETTE["border"],
+            command=self.reset_custom_to_medium
+        )
+        self.monitoring_reset_button.pack(side="right", padx=(0, 8))
+        self.admin_only_widgets.append(self.monitoring_reset_button)
 
         grid_frame = ctk.CTkFrame(group, fg_color="transparent")
         grid_frame.grid(row=3, column=0, sticky="ew", padx=22, pady=(0, 10))
@@ -575,29 +626,21 @@ class SettingsScreen(ctk.CTkFrame):
         footer = ctk.CTkFrame(group, fg_color="transparent")
         footer.grid(row=5, column=0, sticky="ew", padx=22, pady=(0, 22))
         ctk.CTkLabel(footer, text="Settings are saved locally and applied to the AI engine on startup.", font=("Segoe UI", 12), text_color=PALETTE["subtle"], anchor="w").pack(side="left")
-        
-        self.monitoring_save_button = ctk.CTkButton(footer, text="Save AI Preferences", font=("Segoe UI Semibold", 13), fg_color=PALETTE["success"], hover_color=PALETTE["success_hover"], text_color=PALETTE["page"], height=44, corner_radius=12, command=self.save_settings)
-        self.monitoring_save_button.pack(side="right")
-        self.admin_only_widgets.append(self.monitoring_save_button)
 
-        self.btn_manage_cams = ctk.CTkButton(
-            footer, text="Manage Camera Network", font=("Segoe UI Semibold", 13),
-            fg_color=PALETTE["accent"], hover_color=PALETTE["accent_hover"],
-            text_color=PALETTE["page"], height=44, corner_radius=12,
-            command=self._open_camera_management
+        # Secondary save button at bottom for convenience after adjusting sliders
+        self.footer_save_btn = ctk.CTkButton(
+            footer,
+            text="Save AI Preferences",
+            font=("Segoe UI Semibold", 12),
+            fg_color=PALETTE["success"],
+            hover_color=PALETTE["success_hover"],
+            text_color=PALETTE["page"],
+            height=36,
+            corner_radius=8,
+            command=self.save_settings
         )
-        self.btn_manage_cams.pack(side="right", padx=(0, 10))
-        self.admin_only_widgets.append(self.btn_manage_cams)
-
-        self.monitoring_reset_button = ctk.CTkButton(
-            footer, text="Reset Custom to Medium", font=("Segoe UI Semibold", 13),
-            fg_color=PALETTE["card_soft"], hover_color=PALETTE["panel_alt"],
-            text_color=PALETTE["text"], height=44, corner_radius=12,
-            border_width=1, border_color=PALETTE["border"],
-            command=self.reset_custom_to_medium
-        )
-        self.monitoring_reset_button.pack(side="right", padx=(0, 12))
-        self.admin_only_widgets.append(self.monitoring_reset_button)
+        self.footer_save_btn.pack(side="right")
+        self.admin_only_widgets.append(self.footer_save_btn)
 
     def _create_slider_row(self, parent_card, key, row_idx):
         label_text, val_min, val_max, steps, tooltip_text, is_int = self.PARAMS_CFG[key]

@@ -159,3 +159,48 @@ class TestInstallerPrereqs:
 
         assert "$ExpectedVcRedistSha256" in content
         assert "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b" in content
+
+    def test_logo_and_installer_branding_assets(self):
+        """Verify new institutional logo, Windows icon, and Inno Setup wizard assets exist and have valid dimensions."""
+        from PIL import Image
+
+        # 1. Main Logo
+        logo_path = os.path.join(PROJECT_ROOT, "monitor_app", "assets", "logo.png")
+        assert os.path.exists(logo_path)
+        with Image.open(logo_path) as img:
+            assert img.format == "PNG"
+            assert img.size == (512, 512)
+
+        # 2. Windows Application Icon (.ico)
+        ico_path = os.path.join(PROJECT_ROOT, "monitor_app", "assets", "app_icon.ico")
+        assert os.path.exists(ico_path)
+        with Image.open(ico_path) as img:
+            assert img.format == "ICO"
+
+        # 3. Inno Setup Wizard Banner
+        banner_path = os.path.join(PROJECT_ROOT, "installer", "wizard_banner.bmp")
+        assert os.path.exists(banner_path)
+        with Image.open(banner_path) as img:
+            assert img.format == "BMP"
+            assert img.size == (164, 314)
+
+        # 4. Inno Setup Wizard Small Image
+        small_path = os.path.join(PROJECT_ROOT, "installer", "wizard_small.bmp")
+        assert os.path.exists(small_path)
+        with Image.open(small_path) as img:
+            assert img.format == "BMP"
+            assert img.size == (55, 55)
+
+        # 5. Inno Setup script references
+        iss_path = os.path.join(PROJECT_ROOT, "installer", "CellWatch.iss")
+        with open(iss_path, "r", encoding="utf-8") as f:
+            iss_text = f.read()
+        assert "WizardImageFile=wizard_banner.bmp" in iss_text
+        assert "WizardSmallImageFile=wizard_small.bmp" in iss_text
+        assert "SetupIconFile=" in iss_text
+
+        # 6. PyInstaller spec icon reference
+        spec_path = os.path.join(PROJECT_ROOT, "CellWatch.spec")
+        with open(spec_path, "r", encoding="utf-8") as f:
+            spec_text = f.read()
+        assert "icon='monitor_app/assets/app_icon.ico'" in spec_text

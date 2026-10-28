@@ -48,6 +48,7 @@ class IncidentRecorder:
         # Metadata
         self.current_event_id = ""
         self.current_event_type = ""
+        self.current_severity = "MEDIUM"
         self.current_video_path = ""
         self.current_timestamp_start = ""
         self.confidence_scores = []
@@ -101,6 +102,11 @@ class IncidentRecorder:
             ("reviewed_at", "TEXT", None),
             ("retention_days", "INTEGER", None),
             ("review_status", "TEXT", "'PENDING'"),
+            ("operator_action_required", "INTEGER", "0"),
+            ("notes", "TEXT", "''"),
+            ("escalation_level", "TEXT", "'MEDIUM'"),
+            ("created_at", "TEXT", None),
+            ("updated_at", "TEXT", None),
         ]
         for name, col_type, default in columns:
             if name in existing:
@@ -112,10 +118,12 @@ class IncidentRecorder:
         if not os.path.exists(self.recordings_dir):
             os.makedirs(self.recordings_dir)
 
-    def handle_incident_start(self, camera_id, incident_id, event_type, frame, ai_results):
+    def handle_incident_start(self, camera_id, incident_id, event_type, frame, ai_results, severity=None, **kwargs):
         from monitor_app.utils import normalize_cam_id
         if normalize_cam_id(camera_id) != self.camera_id:
             return
+        if severity:
+            self.current_severity = severity
         self.trigger_recording(event_type, [], frame, incident_id, ai_results)
 
     def handle_evidence_added(self, camera_id, incident_id, event_type, confidence_scores, severity=None, **kwargs):
@@ -133,7 +141,7 @@ class IncidentRecorder:
                 # Append confidence scores
                 self.confidence_scores.extend(confidence_scores)
 
-    def handle_incident_stop(self, camera_id, incident_id):
+    def handle_incident_stop(self, camera_id, incident_id, **kwargs):
         from monitor_app.utils import normalize_cam_id
         if normalize_cam_id(camera_id) != self.camera_id:
             return
@@ -249,11 +257,20 @@ class IncidentRecorder:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+            self._ensure_columns(cursor)
+
+            esc_level = getattr(self, "current_severity", "MEDIUM") or "MEDIUM"
+            action_req = 1 if esc_level in ("CRITICAL", "HIGH") else 0
+            created_at = self.current_timestamp_start or datetime.now().isoformat()
+            updated_at = end_time
+            auto_notes = f"Auto-recorded on Camera {self.camera_id} ({self.current_event_type})"
+
             cursor.execute('''
                 INSERT INTO incidents (
                     event_id, camera_id, timestamp_start, timestamp_end, 
-                    event_type, confidence_scores, video_path, review_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    event_type, confidence_scores, video_path, review_status,
+                    operator_action_required, notes, escalation_level, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 self.current_event_id,
                 self.camera_id,
@@ -262,7 +279,12 @@ class IncidentRecorder:
                 self.current_event_type,
                 json.dumps(self.confidence_scores),
                 self.current_video_path,
-                'PENDING'
+                'PENDING',
+                action_req,
+                auto_notes,
+                esc_level,
+                created_at,
+                updated_at,
             ))
             conn.commit()
             conn.close()
@@ -300,6 +322,20 @@ class IncidentRecorder:
                 )
             except Exception:
                 pass
+
+    def close(self):
+        """Cleanly finalize active recording and unsubscribe from EventBus."""
+        with self._lock:
+            if self.state == self.RECORDING:
+                logger.info(f"Finalizing active recording before recorder shutdown", camera_id=self.camera_id, incident_id=self.current_event_id)
+                self._stop_recording()
+        try:
+            from monitor_app.events import get_event_bus
+            get_event_bus().unsubscribe("INCIDENT_START", self.handle_incident_start)
+            get_event_bus().unsubscribe("EVIDENCE_ADDED", self.handle_evidence_added)
+            get_event_bus().unsubscribe("INCIDENT_STOP", self.handle_incident_stop)
+        except Exception as e:
+            logger.debug(f"Error unsubscribing recorder for camera {self.camera_id}: {e}")
 
     def get_status_info(self):
         if self.state == self.RECORDING:

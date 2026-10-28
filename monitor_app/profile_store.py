@@ -207,6 +207,7 @@ def ensure_app_state():
 
     conn.commit()
     conn.close()
+    _normalize_camera_ids_sync()
 
 
 def hash_password(password):
@@ -674,6 +675,7 @@ def list_cameras(include_inactive=False):
     query = "SELECT * FROM cameras"
     if not include_inactive:
         query += " WHERE is_active = 1"
+    query += " ORDER BY camera_id ASC"
     rows = conn.execute(query).fetchall()
     conn.close()
     return [dict(row) for row in rows]
@@ -751,6 +753,47 @@ def delete_camera(camera_id, actor_username=None):
         target_id=str(camera_id),
         details=f"Deleted camera '{name}' (ID {camera_id}).",
     )
+    _normalize_camera_ids_sync()
+
+
+def normalize_camera_ids():
+    """Renumber active cameras sequentially from 1 to N and reset sqlite_sequence."""
+    ensure_app_state()
+    _normalize_camera_ids_sync()
+
+
+def _normalize_camera_ids_sync():
+    conn = _connect()
+    cursor = conn.cursor()
+    rows = cursor.execute("SELECT camera_id, name, source, is_active, created_at FROM cameras ORDER BY created_at ASC, camera_id ASC").fetchall()
+    if not rows:
+        cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'cameras'")
+        conn.commit()
+        conn.close()
+        return
+
+    needs_reorder = any(row["camera_id"] != idx for idx, row in enumerate(rows, start=1))
+
+    if needs_reorder:
+        # Use negative IDs temporarily to avoid UNIQUE primary key collisions
+        for idx, row in enumerate(rows, start=1):
+            cursor.execute("UPDATE cameras SET camera_id = ? WHERE camera_id = ?", (-idx, row["camera_id"]))
+        for idx in range(1, len(rows) + 1):
+            cursor.execute("UPDATE cameras SET camera_id = ? WHERE camera_id = ?", (idx, -idx))
+
+    # Reset sqlite_sequence for 'cameras' table so subsequent inserts start cleanly at len(rows)
+    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'cameras'")
+    cursor.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('cameras', ?)", (len(rows),))
+    conn.commit()
+    conn.close()
+
+    if needs_reorder:
+        record_audit_event(
+            action_type="CAMERAS_NORMALIZED",
+            target_type="CAMERA",
+            target_id="ALL",
+            details=f"Renormalized camera IDs sequentially to 1..{len(rows)}.",
+        )
 
 
 # ==========================================

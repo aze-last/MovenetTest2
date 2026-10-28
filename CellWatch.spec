@@ -53,6 +53,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='monitor_app/assets/app_icon.ico',
 )
 coll = COLLECT(
     exe,

@@ -111,6 +111,10 @@ class IncidentState:
         # Config params
         self.merge_window = get_config("incident_merging", "merge_window", 10.0)
         self.default_cooldown = get_config("alert_cooldowns", "default", 25.0)
+        self.pending_duration = float(get_config("incident_merging", "pending_duration", 0.5))
+        self._pending_frame = None
+        self._pending_ai_results = {}
+        self._pending_event_type = ""
 
     def _update_severity(self, new_severity: str):
         priority = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
@@ -123,6 +127,9 @@ class IncidentState:
         now = time.time()
         self.last_detected = now
         self._update_severity(severity)
+        self._pending_frame = frame
+        self._pending_ai_results = ai_results
+        self._pending_event_type = event_type
         
         # If IDLE or NOT_SEEN, start PENDING
         if self.state in (HysteresisState.IDLE, HysteresisState.NOT_SEEN):
@@ -130,14 +137,16 @@ class IncidentState:
             self.first_detected = now
             self.accumulated_evidence = {event_type}
             logger.info(f"Motion/Event detected -> PENDING", camera_id=self.camera_id)
-            # Short pending window to confirmed
-            if now - self.first_detected >= 0.5: # Configurable pending window could be added
+            # CRITICAL, HIGH, and MEDIUM (contraband) severity confirm immediately without lag
+            if self.highest_severity in ("CRITICAL", "HIGH", "MEDIUM") or self.pending_duration <= 0.0:
+                self._confirm(event_type, frame, ai_results)
+            elif now - self.first_detected >= self.pending_duration:
                 self._confirm(event_type, frame, ai_results)
         
         elif self.state == HysteresisState.PENDING:
             self.accumulated_evidence.add(event_type)
-            # After a short time, confirm the incident
-            if now - self.first_detected >= 0.5:
+            # Confirm when pending duration elapsed or severity elevated
+            if self.highest_severity in ("CRITICAL", "HIGH", "MEDIUM") or (now - self.first_detected >= self.pending_duration):
                 self._confirm(event_type, frame, ai_results)
                 
         elif self.state in (HysteresisState.CONFIRMED, HysteresisState.MAINTAINED):
@@ -223,8 +232,14 @@ class IncidentState:
                 get_event_bus().publish("INCIDENT_STOP", camera_id=self.camera_id, incident_id=self.incident_id)
                 
         elif self.state == HysteresisState.PENDING:
+            # If pending duration reached while detection remains active, confirm!
+            if (now - self.first_detected >= self.pending_duration) and (now - self.last_detected <= self.merge_window):
+                p_frame = getattr(self, "_pending_frame", None)
+                p_res = getattr(self, "_pending_ai_results", {})
+                p_evt = getattr(self, "_pending_event_type", "Alert")
+                self._confirm(p_evt, p_frame, p_res)
             # If no detection for a while, go back to IDLE
-            if now - self.last_detected > self.merge_window:
+            elif now - self.last_detected > self.merge_window:
                 self.state = HysteresisState.IDLE
                 self.accumulated_evidence.clear()
                 self.highest_severity = "LOW"

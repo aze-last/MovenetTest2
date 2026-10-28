@@ -17,6 +17,7 @@ PALETTE = {
     "panel_alt": ("#e2e8f0", "#1c2531"),
     "card": ("#ffffff", "#1b2430"),
     "card_soft": ("#f1f5f9", "#202b38"),
+    "card_selected": ("#e0e7ff", "#1e293b"),
     "surface": ("#ffffff", "#0d131a"),
     "border": ("#cbd5e1", "#26384a"),
     "text": ("#0f172a", "#f3f7fb"),
@@ -177,6 +178,13 @@ def _status_style(status):
     return "PENDING", PALETTE["accent"]
 
 
+def _format_time_sec(seconds: float) -> str:
+    total_sec = max(0, int(seconds))
+    m = total_sec // 60
+    s = total_sec % 60
+    return f"{m:02d}:{s:02d}"
+
+
 class IncidentsScreen(ctk.CTkFrame):
     def __init__(self, parent, current_user="Unknown"):
         super().__init__(parent, fg_color=PALETTE["page"], corner_radius=0)
@@ -185,6 +193,7 @@ class IncidentsScreen(ctk.CTkFrame):
         self.db_path = data_path("incidents.db")
         self.current_user = current_user
         self.summary_labels = {}
+        self.summary_cards = {}
 
         try:
             ensure_incidents_schema(self.db_path)
@@ -198,6 +207,17 @@ class IncidentsScreen(ctk.CTkFrame):
         self._build_header()
         self._build_tabs()
         self.refresh_overview()
+
+        # Real-time EventBus synchronization
+        from monitor_app.events import get_event_bus, INCIDENT_START, INCIDENT_STOP, TELEM_DB_WRITE_COMPLETE
+        bus = get_event_bus()
+        self._bus_handlers = {
+            "INCIDENT_START": self._on_live_incident_start,
+            "INCIDENT_STOP": self._on_live_incident_stop,
+            TELEM_DB_WRITE_COMPLETE: self._on_live_db_complete
+        }
+        for event, handler in self._bus_handlers.items():
+            bus.subscribe(event, handler)
 
     def _build_header(self):
         header = ctk.CTkFrame(
@@ -215,8 +235,8 @@ class IncidentsScreen(ctk.CTkFrame):
 
         ctk.CTkLabel(
             copy_block,
-            text="INCIDENT REVIEW CENTER",
-            font=("Segoe UI Semibold", 11),
+            text="INSTITUTIONAL EVIDENCE AUDIT CENTER",
+            font=("Segoe UI Semibold", 10),
             text_color=PALETTE["accent"],
             anchor="w",
         ).pack(anchor="w")
@@ -227,13 +247,13 @@ class IncidentsScreen(ctk.CTkFrame):
             font=("Bahnschrift SemiBold", 24),
             text_color=PALETTE["text"],
             anchor="w",
-        ).pack(anchor="w", pady=(6, 6))
+        ).pack(anchor="w", pady=(4, 4))
 
         ctk.CTkLabel(
             copy_block,
             text=(
-                "Review recorded evidence, validate events, and maintain operator audit "
-                "decisions from a single controlled workspace."
+                "Unified 3-Pane Incident Review: triage pending evidence clips, scrub timelines, "
+                "validate threat telemetry, and maintain immutable audit decisions."
             ),
             font=("Segoe UI", 12),
             text_color=PALETTE["muted"],
@@ -252,19 +272,22 @@ class IncidentsScreen(ctk.CTkFrame):
                 corner_radius=14,
                 border_width=1,
                 border_color=PALETTE["border"],
-                width=120,
+                width=124,
                 height=86,
+                cursor="hand2",
             )
             card.pack(side="left", padx=(0, 10))
             card.pack_propagate(False)
 
-            ctk.CTkLabel(
+            title_lbl = ctk.CTkLabel(
                 card,
                 text=label,
-                font=("Segoe UI", 11),
+                font=("Segoe UI Semibold", 11),
                 text_color=PALETTE["muted"],
                 anchor="w",
-            ).pack(anchor="w", padx=12, pady=(10, 2))
+                cursor="hand2",
+            )
+            title_lbl.pack(anchor="w", padx=12, pady=(10, 2))
 
             value = ctk.CTkLabel(
                 card,
@@ -272,9 +295,15 @@ class IncidentsScreen(ctk.CTkFrame):
                 font=("Bahnschrift SemiBold", 22),
                 text_color=PALETTE["text"],
                 anchor="w",
+                cursor="hand2",
             )
             value.pack(anchor="w", padx=12, pady=(0, 10))
             self.summary_labels[label] = value
+            self.summary_cards[label] = card
+
+            # Bind interactive filter click
+            for w in (card, title_lbl, value):
+                w.bind("<Button-1>", lambda e, l=label: self._filter_from_header(l))
 
         actions = ctk.CTkFrame(header, fg_color="transparent")
         actions.grid(row=0, column=2, sticky="e", padx=20, pady=14)
@@ -286,8 +315,24 @@ class IncidentsScreen(ctk.CTkFrame):
             fg_color=PALETTE["accent"],
             text_color="#ffffff",
             font=("Segoe UI Semibold", 12),
+            height=38,
+            corner_radius=10,
         )
         btn_offline.pack(side="right")
+
+    def _filter_from_header(self, label: str):
+        target_tab = "Incident Handling & Validation"
+        if hasattr(self, "tabview") and self.tabview.get() != target_tab:
+            self.tabview.set(target_tab)
+
+        filter_map = {
+            "Pending Queue": "PENDING",
+            "Needs Review": "NEEDS REVIEW",
+            "Confirmed": "CONFIRMED",
+        }
+        status_key = filter_map.get(label, "ALL")
+        if hasattr(self, "review_tab") and self.review_tab:
+            self.review_tab.set_queue_filter(status_key)
 
     def _open_offline_analysis(self):
         from monitor_app.offline_ui import OfflineAnalysisCenterDialog
@@ -320,17 +365,51 @@ class IncidentsScreen(ctk.CTkFrame):
             self.on_incident_updated,
             self.current_user,
         )
-        self.review_tab.pack(fill="both", expand=True, padx=10, pady=10)
+        self.review_tab.pack(fill="both", expand=True, padx=6, pady=6)
 
         self.log_tab = IncidentLogTable(self.tab_history, self.db_path, self.on_log_selected)
         self.log_tab.pack(fill="both", expand=True, padx=10, pady=10)
 
+    def _on_live_incident_start(self, *args, **kwargs):
+        self.after(300, self._refresh_live_state)
+
+    def _on_live_incident_stop(self, *args, **kwargs):
+        self.after(600, self._refresh_live_state)
+
+    def _on_live_db_complete(self, *args, **kwargs):
+        self.after(300, self._refresh_live_state)
+
+    def _refresh_live_state(self):
+        try:
+            self.refresh_overview()
+            if hasattr(self, "review_tab") and self.review_tab:
+                self.review_tab.refresh_inbox(auto_select_first=False)
+            if hasattr(self, "log_tab") and self.log_tab:
+                self.log_tab.refresh_data()
+        except Exception:
+            pass
+
     def stop_monitoring(self):
-        self.review_tab.stop_monitoring()
+        try:
+            from monitor_app.events import get_event_bus
+            bus = get_event_bus()
+            for event, handler in getattr(self, "_bus_handlers", {}).items():
+                bus.unsubscribe(event, handler)
+            self._bus_handlers = {}
+        except Exception:
+            pass
+        if hasattr(self, "review_tab") and self.review_tab:
+            self.review_tab.stop_monitoring()
+
+    def destroy(self):
+        self.stop_monitoring()
+        super().destroy()
 
     def apply_appearance_mode(self):
         if hasattr(self, "log_tab") and self.log_tab:
             self.log_tab.apply_appearance_mode()
+        if hasattr(self, "review_tab") and self.review_tab:
+            self.review_tab.apply_appearance_mode()
 
     def refresh_overview(self):
         snapshot = {
@@ -360,7 +439,7 @@ class IncidentsScreen(ctk.CTkFrame):
 
     def on_log_selected(self, event_data):
         self.tabview.set("Incident Handling & Validation")
-        self.review_tab.load_incident(event_data)
+        self.review_tab.load_incident(event_data, update_inbox_selection=True)
 
     def select_incident_by_id(self, incident_id):
         """Auto-select and load a specific incident for immediate review."""
@@ -368,24 +447,31 @@ class IncidentsScreen(ctk.CTkFrame):
             return
         try:
             conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM incidents WHERE event_id = ?", (incident_id,))
             row = cursor.fetchone()
             if row:
-                columns = [col[0] for col in cursor.description]
-                data = dict(zip(columns, row))
+                data = dict(row)
                 self.tabview.set("Incident Handling & Validation")
-                self.review_tab.load_incident(data)
+                self.review_tab.load_incident(data, update_inbox_selection=True)
             conn.close()
         except Exception as e:
             print(f"select_incident_by_id error: {e}")
 
     def on_incident_updated(self):
-        self.log_tab.refresh_data()
+        if hasattr(self, "log_tab") and self.log_tab:
+            self.log_tab.refresh_data()
         self.refresh_overview()
 
 
 class IncidentReviewDetail(ctk.CTkFrame):
+    """
+    Unified 3-Pane Incident Review Center:
+    - Column 0 (~25%): Interactive Incident Queue & Filter Bar
+    - Column 1 (~45%): High-Fidelity Forensic Evidence Video Player & Timeline Scrubber
+    - Column 2 (~30%): Forensic Dossier, Classified Threats & Auditor Action Panel
+    """
     def __init__(self, parent, db_path, on_update_callback, current_user):
         super().__init__(parent, fg_color="transparent")
         self.db_path = db_path
@@ -397,28 +483,397 @@ class IncidentReviewDetail(ctk.CTkFrame):
         self.is_playing = False
         self._playback_job = None
         self._current_frame_img = None
+        self._last_raw_frame = None
+        self.fps = 20.0
+        self.total_frames = 0
+        self.duration_s = 0.0
+        self.current_sec = 0.0
+        self.is_looping = False
+        self._is_scrubbing = False
+
+        self.all_incidents = []
+        self.filtered_incidents = []
+        self.selected_event_id = None
+        self.inbox_cards = {}
+        self.current_filter = "ALL"
+        self.search_query = ""
 
         self.detail_vars = {
             "id": tk.StringVar(value="No selection"),
             "camera": tk.StringVar(value="-"),
             "time": tk.StringVar(value="-"),
+            "duration": tk.StringVar(value="-"),
             "type": tk.StringVar(value="-"),
             "reviewed_by": tk.StringVar(value="-"),
             "retention": tk.StringVar(value="-"),
         }
         self._raw_stream_visible = False
 
-        self.grid_columnconfigure(0, weight=13, uniform="incidents_cols")
-        self.grid_columnconfigure(1, weight=7, uniform="incidents_cols")
+        # Unified 3-Pane Grid Setup
+        self.grid_columnconfigure(0, weight=6, uniform="review_cols")
+        self.grid_columnconfigure(1, weight=11, uniform="review_cols")
+        self.grid_columnconfigure(2, weight=7, uniform="review_cols")
         self.grid_rowconfigure(0, weight=1)
 
         self.create_widgets()
+        self.refresh_inbox(auto_select_first=True)
         self._check_playback_stop()
 
     def stop_monitoring(self):
         self.stop_playback()
 
+    def apply_appearance_mode(self):
+        # Refresh inbox styling if needed
+        self._render_inbox_cards()
+
     def create_widgets(self):
+        self._build_inbox_panel()
+        self._build_evidence_player()
+        self._build_details_card()
+
+    # =========================================================================
+    # PANE 1 (LEFT ~25%): INTERACTIVE INCIDENT QUEUE
+    # =========================================================================
+    def _build_inbox_panel(self):
+        self.inbox_panel = ctk.CTkFrame(
+            self,
+            fg_color=PALETTE["panel"],
+            corner_radius=14,
+            border_width=1,
+            border_color=PALETTE["border"],
+        )
+        self.inbox_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.inbox_panel.grid_columnconfigure(0, weight=1)
+        self.inbox_panel.grid_rowconfigure(2, weight=1)
+
+        # Header with Title, Count Chip and Refresh
+        inbox_hdr = ctk.CTkFrame(self.inbox_panel, fg_color="transparent")
+        inbox_hdr.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))
+        inbox_hdr.grid_columnconfigure(0, weight=1)
+
+        title_box = ctk.CTkFrame(inbox_hdr, fg_color="transparent")
+        title_box.grid(row=0, column=0, sticky="w")
+
+        ctk.CTkLabel(
+            title_box,
+            text="Incident Queue",
+            font=("Bahnschrift SemiBold", 17),
+            text_color=PALETTE["text"],
+            anchor="w",
+        ).pack(side="left")
+
+        self.inbox_count_chip = ctk.CTkLabel(
+            title_box,
+            text="0",
+            font=("Segoe UI Bold", 10),
+            text_color=PALETTE["accent"],
+            fg_color=PALETTE["card_soft"],
+            corner_radius=8,
+            padx=8,
+            pady=2,
+        )
+        self.inbox_count_chip.pack(side="left", padx=(8, 0))
+
+        btn_refresh = ctk.CTkButton(
+            inbox_hdr,
+            text="⟳",
+            width=28,
+            height=28,
+            corner_radius=6,
+            fg_color=PALETTE["card_soft"],
+            hover_color=PALETTE["panel_alt"],
+            text_color=PALETTE["text"],
+            font=("Segoe UI", 13, "bold"),
+            command=lambda: self.refresh_inbox(auto_select_first=False),
+        )
+        btn_refresh.grid(row=0, column=1, sticky="e")
+
+        # Search Bar & Filter Chips
+        filter_box = ctk.CTkFrame(self.inbox_panel, fg_color="transparent")
+        filter_box.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
+        filter_box.grid_columnconfigure(0, weight=1)
+
+        self.search_entry = ctk.CTkEntry(
+            filter_box,
+            placeholder_text="Search ID, camera, threat...",
+            height=32,
+            corner_radius=8,
+            border_color=PALETTE["border"],
+            fg_color=PALETTE["card"],
+            text_color=PALETTE["text"],
+            font=("Segoe UI", 11),
+        )
+        self.search_entry.pack(fill="x", pady=(0, 6))
+        self.search_entry.bind("<KeyRelease>", self._on_search_typed)
+
+        self.filter_chips_wrap = ctk.CTkFrame(filter_box, fg_color="transparent")
+        self.filter_chips_wrap.pack(fill="x")
+
+        self.filter_buttons = {}
+        chip_labels = ["ALL", "PENDING", "CONFIRMED", "FALSE ALARM", "NEEDS REVIEW"]
+        for opt in chip_labels:
+            short_txt = opt.title() if opt != "ALL" else "All"
+            if opt == "FALSE ALARM":
+                short_txt = "False"
+            elif opt == "NEEDS REVIEW":
+                short_txt = "Review"
+
+            btn = ctk.CTkButton(
+                self.filter_chips_wrap,
+                text=short_txt,
+                height=24,
+                corner_radius=6,
+                fg_color=PALETTE["card_soft"],
+                hover_color=PALETTE["panel_alt"],
+                text_color=PALETTE["muted"],
+                font=("Segoe UI Semibold", 10),
+                command=lambda o=opt: self.set_queue_filter(o),
+            )
+            btn.pack(side="left", padx=(0, 4), expand=True, fill="x")
+            self.filter_buttons[opt] = btn
+
+        self._update_filter_button_styles()
+
+        # Scrollable Incident Card Stream
+        self.inbox_scroll = ctk.CTkScrollableFrame(
+            self.inbox_panel,
+            fg_color="transparent",
+            corner_radius=0,
+        )
+        self.inbox_scroll.grid(row=2, column=0, sticky="nsew", padx=6, pady=(0, 10))
+
+    def _update_filter_button_styles(self):
+        for opt, btn in self.filter_buttons.items():
+            if opt == self.current_filter:
+                btn.configure(
+                    fg_color=PALETTE["accent"],
+                    text_color="#ffffff",
+                )
+            else:
+                btn.configure(
+                    fg_color=PALETTE["card_soft"],
+                    text_color=PALETTE["muted"],
+                )
+
+    def set_queue_filter(self, filter_name: str):
+        self.current_filter = (filter_name or "ALL").upper()
+        self._update_filter_button_styles()
+        self._filter_inbox()
+
+    def _on_search_typed(self, _event=None):
+        self.search_query = self.search_entry.get().strip().lower()
+        self._filter_inbox()
+
+    def refresh_inbox(self, auto_select_first=False):
+        self.all_incidents = []
+        if os.path.exists(self.db_path):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM incidents ORDER BY timestamp_start DESC")
+                self.all_incidents = [dict(r) for r in cursor.fetchall()]
+                conn.close()
+            except Exception as e:
+                print(f"refresh_inbox error: {e}")
+
+        # Count pending items
+        pending_cnt = sum(
+            1 for r in self.all_incidents
+            if (r.get("review_status") or "PENDING").upper() == "PENDING"
+        )
+        self.inbox_count_chip.configure(text=f"{pending_cnt} pending")
+
+        self._filter_inbox(auto_select_first=auto_select_first)
+
+    def _filter_inbox(self, auto_select_first=False):
+        res = []
+        for r in self.all_incidents:
+            status = (r.get("review_status") or "PENDING").upper()
+            if self.current_filter != "ALL" and status != self.current_filter:
+                continue
+
+            if self.search_query:
+                eid = str(r.get("event_id", "")).lower()
+                cam = str(r.get("camera_id", "")).lower()
+                etype = str(r.get("event_type", "")).lower()
+                if self.search_query not in eid and self.search_query not in cam and self.search_query not in etype:
+                    continue
+
+            res.append(r)
+
+        self.filtered_incidents = res
+        self._render_inbox_cards()
+
+        if auto_select_first and self.filtered_incidents and not self.current_incident:
+            self.load_incident(self.filtered_incidents[0], update_inbox_selection=True)
+
+    def _render_inbox_cards(self):
+        for child in self.inbox_scroll.winfo_children():
+            child.destroy()
+        self.inbox_cards.clear()
+
+        if not self.filtered_incidents:
+            empty_lbl = ctk.CTkLabel(
+                self.inbox_scroll,
+                text="No incidents found in this filter.",
+                font=("Segoe UI", 11),
+                text_color=PALETTE["subtle"],
+            )
+            empty_lbl.pack(pady=24)
+            return
+
+        display_limit = 50
+        displayed = self.filtered_incidents[:display_limit]
+        for inc in displayed:
+            eid = inc["event_id"]
+            card = self._create_inbox_card(inc)
+            self.inbox_cards[eid] = card
+
+        if len(self.filtered_incidents) > display_limit:
+            more_lbl = ctk.CTkLabel(
+                self.inbox_scroll,
+                text=f"+ {len(self.filtered_incidents) - display_limit} older items (search or filter)",
+                font=("Segoe UI", 10),
+                text_color=PALETTE["subtle"],
+            )
+            more_lbl.pack(pady=8)
+
+    def _create_inbox_card(self, inc):
+        eid = inc["event_id"]
+        status = (inc.get("review_status") or "PENDING").upper()
+        status_text, status_color = _status_style(status)
+        raw_type = inc.get("event_type", "")
+        parsed = parse_threat_telemetry(raw_type)
+
+        primary_cat = parsed[0]["category"] if parsed else "neutral"
+        if primary_cat == "danger":
+            strip_color = PALETTE["danger"]
+        elif primary_cat == "warning":
+            strip_color = PALETTE["warning"]
+        elif primary_cat == "accent":
+            strip_color = PALETTE["accent"]
+        else:
+            strip_color = PALETTE["subtle"]
+
+        is_selected = (self.selected_event_id == eid)
+        card_bg = PALETTE["card_selected"] if is_selected else PALETTE["card"]
+        border_col = PALETTE["accent"] if is_selected else PALETTE["border"]
+        border_w = 2 if is_selected else 1
+
+        card = ctk.CTkFrame(
+            self.inbox_scroll,
+            fg_color=card_bg,
+            corner_radius=10,
+            border_width=border_w,
+            border_color=border_col,
+            cursor="hand2",
+        )
+        card.pack(fill="x", pady=4, padx=4)
+
+        # Left threat color indicator bar
+        strip = ctk.CTkFrame(
+            card,
+            fg_color=strip_color,
+            width=5,
+            corner_radius=2,
+        )
+        strip.pack(side="left", fill="y", padx=(4, 8), pady=4)
+
+        body = ctk.CTkFrame(card, fg_color="transparent", cursor="hand2")
+        body.pack(side="left", fill="both", expand=True, padx=(0, 6), pady=6)
+
+        # Top row: Camera badge + Time
+        top_row = ctk.CTkFrame(body, fg_color="transparent", cursor="hand2")
+        top_row.pack(fill="x")
+
+        cam_txt = f"CAM {inc.get('camera_id', '-')}"
+        cam_badge = ctk.CTkLabel(
+            top_row,
+            text=cam_txt,
+            font=("Segoe UI Bold", 9),
+            text_color=PALETTE["text"],
+            fg_color=PALETTE["card_soft"],
+            corner_radius=4,
+            padx=6,
+            pady=1,
+            cursor="hand2",
+        )
+        cam_badge.pack(side="left")
+
+        time_str = self._format_short_time(inc.get("timestamp_start", ""))
+        time_lbl = ctk.CTkLabel(
+            top_row,
+            text=time_str,
+            font=("Segoe UI", 10),
+            text_color=PALETTE["muted"],
+            anchor="e",
+            cursor="hand2",
+        )
+        time_lbl.pack(side="right")
+
+        # Threat Title
+        short_threat = summarize_event_type_short(raw_type, max_items=2)
+        threat_lbl = ctk.CTkLabel(
+            body,
+            text=short_threat,
+            font=("Segoe UI Semibold", 11),
+            text_color=PALETTE["text"],
+            anchor="w",
+            cursor="hand2",
+        )
+        threat_lbl.pack(fill="x", pady=(2, 2))
+
+        # Bottom row: Event ID (clean) & Status Pill
+        btm_row = ctk.CTkFrame(body, fg_color="transparent", cursor="hand2")
+        btm_row.pack(fill="x")
+
+        id_clean = eid.replace("INC_", "").replace("EVT_", "")
+        if len(id_clean) > 16:
+            id_clean = id_clean[:14] + ".."
+
+        id_lbl = ctk.CTkLabel(
+            btm_row,
+            text=id_clean,
+            font=("Consolas", 9),
+            text_color=PALETTE["subtle"],
+            anchor="w",
+            cursor="hand2",
+        )
+        id_lbl.pack(side="left")
+
+        stat_pill = ctk.CTkLabel(
+            btm_row,
+            text=status_text,
+            font=("Segoe UI Bold", 9),
+            text_color=status_color,
+            fg_color=PALETTE["card_soft"],
+            corner_radius=4,
+            padx=6,
+            pady=1,
+            cursor="hand2",
+        )
+        stat_pill.pack(side="right")
+
+        # Bind click handlers for whole card
+        for w in (card, body, top_row, cam_badge, time_lbl, threat_lbl, btm_row, id_lbl, stat_pill):
+            w.bind("<Button-1>", lambda e, d=inc: self.load_incident(d, update_inbox_selection=True))
+
+        return card
+
+    def _format_short_time(self, raw_ts):
+        if not raw_ts:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+            return dt.strftime("%b %d, %H:%M")
+        except Exception:
+            return str(raw_ts)[:16]
+
+    # =========================================================================
+    # PANE 2 (CENTER ~45%): HIGH-FIDELITY EVIDENCE VIDEO PLAYER & SCRUBBER
+    # =========================================================================
+    def _build_evidence_player(self):
         self.left_panel = ctk.CTkFrame(
             self,
             fg_color=PALETTE["panel"],
@@ -426,119 +881,288 @@ class IncidentReviewDetail(ctk.CTkFrame):
             border_width=1,
             border_color=PALETTE["border"],
         )
-        self.left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        self.left_panel.grid(row=0, column=1, sticky="nsew", padx=4)
         self.left_panel.grid_columnconfigure(0, weight=1)
         self.left_panel.grid_rowconfigure(1, weight=1)
 
+        # 1. Header with Title & Clip File Name
         playback_header = ctk.CTkFrame(self.left_panel, fg_color="transparent")
-        playback_header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        playback_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
         playback_header.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             playback_header,
             text="Evidence Playback",
-            font=("Bahnschrift SemiBold", 23),
+            font=("Bahnschrift SemiBold", 19),
             text_color=PALETTE["text"],
             anchor="w",
         ).grid(row=0, column=0, sticky="w")
 
         self.playback_state = ctk.CTkLabel(
             playback_header,
-            text="Select an incident from the history log",
-            font=("Segoe UI", 12),
+            text="Select an incident from queue",
+            font=("Consolas", 11),
             text_color=PALETTE["muted"],
             anchor="e",
         )
         self.playback_state.grid(row=0, column=1, sticky="e")
 
+        # 2. Evidence Video Canvas Container (Frame 0 Poster Preview Target)
         self.video_player_container = ctk.CTkFrame(
             self.left_panel,
             fg_color=PALETTE["surface"],
-            corner_radius=22,
+            corner_radius=16,
             border_width=1,
             border_color=PALETTE["border"],
-            width=640,
-            height=360,
+            width=580,
+            height=340,
         )
-        self.video_player_container.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 14))
+        self.video_player_container.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 8))
         self.video_player_container.grid_propagate(False)
         self.video_player_container.grid_columnconfigure(0, weight=1)
         self.video_player_container.grid_rowconfigure(0, weight=1)
 
         self.video_label = ctk.CTkLabel(
             self.video_player_container,
-            text="Select an incident from the history log to load evidence.",
+            text="Select an incident from the queue to load evidence clip.",
             text_color=PALETTE["subtle"],
-            font=("Segoe UI", 14),
+            font=("Segoe UI", 13),
             compound="center",
         )
-        self.video_label.grid(row=0, column=0, sticky="nsew", padx=14, pady=14)
+        self.video_label.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
+        # 3. Interactive Forensic Timeline Scrubber Bar
+        timeline_bar = ctk.CTkFrame(self.left_panel, fg_color="transparent")
+        timeline_bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 6))
+        timeline_bar.grid_columnconfigure(1, weight=1)
+
+        self.time_current_lbl = ctk.CTkLabel(
+            timeline_bar,
+            text="00:00",
+            font=("Consolas", 11, "bold"),
+            text_color=PALETTE["accent"],
+            width=42,
+        )
+        self.time_current_lbl.grid(row=0, column=0, sticky="w", padx=(0, 6))
+
+        self.timeline_slider = ctk.CTkSlider(
+            timeline_bar,
+            from_=0,
+            to=100,
+            command=self._on_slider_scrub,
+            progress_color=PALETTE["accent"],
+            button_color=PALETTE["accent"],
+            button_hover_color=PALETTE["accent_hover"],
+            height=16,
+        )
+        self.timeline_slider.set(0)
+        self.timeline_slider.grid(row=0, column=1, sticky="ew")
+        self.timeline_slider.bind("<ButtonPress-1>", lambda e: self._on_scrub_start())
+        self.timeline_slider.bind("<ButtonRelease-1>", lambda e: self._on_scrub_end())
+
+        self.time_total_lbl = ctk.CTkLabel(
+            timeline_bar,
+            text="00:00",
+            font=("Consolas", 11),
+            text_color=PALETTE["muted"],
+            width=42,
+        )
+        self.time_total_lbl.grid(row=0, column=2, sticky="e", padx=(6, 0))
+
+        # 4. Multi-Speed Transport Controls
         controls = ctk.CTkFrame(self.left_panel, fg_color="transparent")
-        controls.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 18))
+        controls.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 10))
 
-        control_row = ctk.CTkFrame(controls, fg_color="transparent")
-        control_row.pack(fill="x")
+        transport_row = ctk.CTkFrame(controls, fg_color="transparent")
+        transport_row.pack(fill="x")
 
         self.btn_back = ctk.CTkButton(
-            control_row,
-            text="<< 10s",
-            width=98,
-            height=40,
-            corner_radius=12,
+            transport_row,
+            text="<< -5s",
+            width=70,
+            height=34,
+            corner_radius=8,
             fg_color=PALETTE["card_soft"],
             hover_color=PALETTE["panel_alt"],
             text_color=PALETTE["text"],
-            font=("Segoe UI Semibold", 12),
-            command=lambda: self.seek_video(-10),
+            font=("Segoe UI Semibold", 11),
+            command=lambda: self.seek_video(-5),
         )
-        self.btn_back.pack(side="left", padx=(0, 10))
+        self.btn_back.pack(side="left", padx=(0, 6))
 
         self.btn_play = ctk.CTkButton(
-            control_row,
+            transport_row,
             text="Play Evidence",
-            height=40,
-            corner_radius=12,
+            width=116,
+            height=34,
+            corner_radius=8,
             fg_color=PALETTE["accent"],
             hover_color=PALETTE["accent_hover"],
-            text_color=PALETTE["text"],
+            text_color="#ffffff",
             font=("Segoe UI Semibold", 12),
             command=self.open_video,
         )
-        self.btn_play.pack(side="left", padx=(0, 10))
+        self.btn_play.pack(side="left", padx=(0, 6))
 
         self.btn_forward = ctk.CTkButton(
-            control_row,
-            text="10s >>",
-            width=98,
-            height=40,
-            corner_radius=12,
+            transport_row,
+            text="+5s >>",
+            width=70,
+            height=34,
+            corner_radius=8,
             fg_color=PALETTE["card_soft"],
             hover_color=PALETTE["panel_alt"],
             text_color=PALETTE["text"],
-            font=("Segoe UI Semibold", 12),
-            command=lambda: self.seek_video(10),
+            font=("Segoe UI Semibold", 11),
+            command=lambda: self.seek_video(5),
         )
-        self.btn_forward.pack(side="left")
+        self.btn_forward.pack(side="left", padx=(0, 6))
+
+        self.btn_snapshot = ctk.CTkButton(
+            transport_row,
+            text="📸 Snapshot",
+            width=90,
+            height=34,
+            corner_radius=8,
+            fg_color=PALETTE["card_soft"],
+            hover_color=PALETTE["panel_alt"],
+            text_color=PALETTE["text"],
+            font=("Segoe UI Semibold", 11),
+            command=self.snapshot_current_frame,
+        )
+        self.btn_snapshot.pack(side="left", padx=(0, 6))
+
+        self.btn_loop = ctk.CTkButton(
+            transport_row,
+            text="🔄 Loop: OFF",
+            width=90,
+            height=34,
+            corner_radius=8,
+            fg_color=PALETTE["card_soft"],
+            hover_color=PALETTE["panel_alt"],
+            text_color=PALETTE["muted"],
+            font=("Segoe UI Semibold", 11),
+            command=self._toggle_loop,
+        )
+        self.btn_loop.pack(side="left")
 
         self.playback_note = ctk.CTkLabel(
             controls,
-            text="Playback controls are available once a valid incident clip is selected.",
-            font=("Segoe UI", 11),
+            text="Select an incident to review evidence with frame-accurate timeline scrubbing.",
+            font=("Segoe UI", 10),
             text_color=PALETTE["subtle"],
             anchor="w",
             justify="left",
         )
-        self.playback_note.pack(anchor="w", pady=(12, 0))
+        self.playback_note.pack(anchor="w", pady=(6, 0))
 
+        # 5. Prominent 1-Click Continuous Triage Action Bar
+        triage_frame = ctk.CTkFrame(
+            self.left_panel,
+            fg_color=PALETTE["card_soft"],
+            corner_radius=12,
+            border_width=1,
+            border_color=PALETTE["border"],
+        )
+        triage_frame.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 14))
+
+        triage_top = ctk.CTkFrame(triage_frame, fg_color="transparent")
+        triage_top.pack(fill="x", padx=12, pady=(10, 4))
+
+        ctk.CTkLabel(
+            triage_top,
+            text="CONTINUOUS TRIAGE ACTIONS",
+            font=("Segoe UI", 9, "bold"),
+            text_color=PALETTE["muted"],
+            anchor="w",
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            triage_top,
+            text="Auto-advances to next pending incident on action",
+            font=("Segoe UI", 9),
+            text_color=PALETTE["subtle"],
+            anchor="e",
+        ).pack(side="right")
+
+        triage_btns = ctk.CTkFrame(triage_frame, fg_color="transparent")
+        triage_btns.pack(fill="x", padx=12, pady=(0, 10))
+        triage_btns.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        self.btn_confirm = ctk.CTkButton(
+            triage_btns,
+            text="✔ Confirm Threat",
+            height=36,
+            corner_radius=8,
+            fg_color=PALETTE["danger"],
+            hover_color="#b91c1c",
+            text_color="#ffffff",
+            font=("Segoe UI Semibold", 11),
+            command=lambda: self.update_status("CONFIRMED"),
+        )
+        self.btn_confirm.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+
+        self.btn_false = ctk.CTkButton(
+            triage_btns,
+            text="✖ False Alarm",
+            height=36,
+            corner_radius=8,
+            fg_color=PALETTE["success"],
+            hover_color="#15803d",
+            text_color="#ffffff",
+            font=("Segoe UI Semibold", 11),
+            command=lambda: self.update_status("FALSE ALARM"),
+        )
+        self.btn_false.grid(row=0, column=1, sticky="ew", padx=3)
+
+        self.btn_review = ctk.CTkButton(
+            triage_btns,
+            text="⚠ Needs Review",
+            height=36,
+            corner_radius=8,
+            fg_color=PALETTE["warning"],
+            hover_color="#b45309",
+            text_color="#ffffff",
+            font=("Segoe UI Semibold", 11),
+            command=lambda: self.update_status("NEEDS REVIEW"),
+        )
+        self.btn_review.grid(row=0, column=2, sticky="ew", padx=3)
+
+        self.btn_extract = ctk.CTkButton(
+            triage_btns,
+            text="💾 Dataset Export",
+            height=36,
+            corner_radius=8,
+            fg_color=PALETTE["card"],
+            border_width=1,
+            border_color=PALETTE["border"],
+            hover_color=PALETTE["panel_alt"],
+            text_color=PALETTE["text"],
+            font=("Segoe UI Semibold", 11),
+            command=self.extract_to_dataset,
+        )
+        self.btn_extract.grid(row=0, column=3, sticky="ew", padx=(3, 0))
+
+        self.feedback_label = ctk.CTkLabel(
+            triage_frame,
+            text="Select an incident from queue to begin review.",
+            font=("Segoe UI", 10),
+            text_color=PALETTE["subtle"],
+            anchor="w",
+            justify="left",
+            wraplength=480,
+        )
+        self.feedback_label.pack(fill="x", padx=12, pady=(0, 8))
+
+    # =========================================================================
+    # PANE 3 (RIGHT ~30%): FORENSIC DOSSIER & AUDITOR NOTES
+    # =========================================================================
+    def _build_details_card(self):
         self.right_panel = ctk.CTkFrame(self, fg_color="transparent")
-        self.right_panel.grid(row=0, column=1, sticky="nsew")
+        self.right_panel.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
         self.right_panel.grid_columnconfigure(0, weight=1)
         self.right_panel.grid_rowconfigure(0, weight=1)
 
-        self._build_details_card()
-
-    def _build_details_card(self):
         self.details_card = ctk.CTkScrollableFrame(
             self.right_panel,
             fg_color=PALETTE["panel"],
@@ -548,23 +1172,23 @@ class IncidentReviewDetail(ctk.CTkFrame):
         )
         self.details_card.grid(row=0, column=0, sticky="nsew")
 
-        # 1. Header Card (Title, Status Chip, Record ID)
+        # 1. Header Card (Title, Status Chip, Record ID + Copy Button)
         header_card = ctk.CTkFrame(
             self.details_card,
             fg_color=PALETTE["card"],
-            corner_radius=14,
+            corner_radius=12,
             border_width=1,
             border_color=PALETTE["border"],
         )
-        header_card.pack(fill="x", padx=16, pady=(16, 12))
+        header_card.pack(fill="x", padx=12, pady=(12, 10))
 
         header_top = ctk.CTkFrame(header_card, fg_color="transparent")
-        header_top.pack(fill="x", padx=16, pady=(14, 6))
+        header_top.pack(fill="x", padx=12, pady=(12, 4))
 
         ctk.CTkLabel(
             header_top,
-            text="Incident Details",
-            font=("Bahnschrift SemiBold", 19),
+            text="Incident Dossier",
+            font=("Bahnschrift SemiBold", 17),
             text_color=PALETTE["text"],
             anchor="w",
         ).pack(side="left")
@@ -575,14 +1199,14 @@ class IncidentReviewDetail(ctk.CTkFrame):
             font=("Segoe UI Bold", 10),
             text_color=PALETTE["accent"],
             fg_color=PALETTE["card_soft"],
-            corner_radius=8,
-            padx=12,
-            pady=5,
+            corner_radius=6,
+            padx=10,
+            pady=3,
         )
         self.status_chip.pack(side="right")
 
         id_bar = ctk.CTkFrame(header_card, fg_color="transparent")
-        id_bar.pack(fill="x", padx=16, pady=(0, 14))
+        id_bar.pack(fill="x", padx=12, pady=(0, 10))
 
         ctk.CTkLabel(
             id_bar,
@@ -595,62 +1219,76 @@ class IncidentReviewDetail(ctk.CTkFrame):
         self.id_label = ctk.CTkLabel(
             id_bar,
             textvariable=self.detail_vars["id"],
-            font=("Consolas", 11, "bold"),
+            font=("Consolas", 10, "bold"),
             text_color=PALETTE["text"],
             anchor="w",
         )
         self.id_label.pack(side="left")
 
+        btn_copy_id = ctk.CTkButton(
+            id_bar,
+            text="📋",
+            width=22,
+            height=22,
+            corner_radius=4,
+            fg_color="transparent",
+            hover_color=PALETTE["card_soft"],
+            text_color=PALETTE["muted"],
+            font=("Segoe UI", 10),
+            command=self.copy_event_id,
+        )
+        btn_copy_id.pack(side="right")
+
         # 2. Metadata Grid (2x2 symmetrical key-value tiles)
         meta_grid = ctk.CTkFrame(self.details_card, fg_color="transparent")
-        meta_grid.pack(fill="x", padx=16, pady=(0, 12))
+        meta_grid.pack(fill="x", padx=12, pady=(0, 10))
         meta_grid.grid_columnconfigure((0, 1), weight=1)
 
         meta_layout = [
             ("CAMERA FEED", "camera", 0, 0),
             ("TIMESTAMP", "time", 0, 1),
-            ("AUDIT OFFICER", "reviewed_by", 1, 0),
-            ("RETENTION", "retention", 1, 1),
+            ("DURATION", "duration", 1, 0),
+            ("AUDIT OFFICER", "reviewed_by", 1, 1),
         ]
 
         for label, key, row, col in meta_layout:
             tile = ctk.CTkFrame(
                 meta_grid,
                 fg_color=PALETTE["card"],
-                corner_radius=12,
+                corner_radius=10,
                 border_width=1,
                 border_color=PALETTE["border"],
             )
-            tile.grid(row=row, column=col, sticky="ew", padx=4, pady=4)
+            tile.grid(row=row, column=col, sticky="ew", padx=3, pady=3)
 
             ctk.CTkLabel(
                 tile,
                 text=label,
-                font=("Segoe UI", 9, "bold"),
+                font=("Segoe UI", 8, "bold"),
                 text_color=PALETTE["muted"],
                 anchor="w",
-            ).pack(anchor="w", padx=12, pady=(8, 2))
+            ).pack(anchor="w", padx=10, pady=(6, 1))
 
             ctk.CTkLabel(
                 tile,
                 textvariable=self.detail_vars[key],
-                font=("Segoe UI Semibold", 12),
+                font=("Segoe UI Semibold", 11),
                 text_color=PALETTE["text"],
                 anchor="w",
-            ).pack(anchor="w", fill="x", padx=12, pady=(0, 8))
+            ).pack(anchor="w", fill="x", padx=10, pady=(0, 6))
 
         # 3. Classified Threats & Evidence
         self.threat_panel = ctk.CTkFrame(
             self.details_card,
             fg_color=PALETTE["card"],
-            corner_radius=14,
+            corner_radius=12,
             border_width=1,
             border_color=PALETTE["border"],
         )
-        self.threat_panel.pack(fill="x", padx=16, pady=(0, 12))
+        self.threat_panel.pack(fill="x", padx=12, pady=(0, 10))
 
         threat_header = ctk.CTkFrame(self.threat_panel, fg_color="transparent")
-        threat_header.pack(fill="x", padx=14, pady=(12, 6))
+        threat_header.pack(fill="x", padx=12, pady=(10, 4))
 
         ctk.CTkLabel(
             threat_header,
@@ -668,12 +1306,12 @@ class IncidentReviewDetail(ctk.CTkFrame):
             fg_color=PALETTE["card_soft"],
             corner_radius=6,
             padx=8,
-            pady=2,
+            pady=1,
         )
         self.threat_count_chip.pack(side="right")
 
         self.threat_badges_frame = ctk.CTkFrame(self.threat_panel, fg_color="transparent")
-        self.threat_badges_frame.pack(fill="x", padx=14, pady=(0, 10))
+        self.threat_badges_frame.pack(fill="x", padx=12, pady=(0, 8))
 
         self.empty_threat_label = ctk.CTkLabel(
             self.threat_badges_frame,
@@ -686,16 +1324,16 @@ class IncidentReviewDetail(ctk.CTkFrame):
 
         # Raw Stream Toggle & Textbox (Bounded Collapsible)
         self.raw_stream_container = ctk.CTkFrame(self.threat_panel, fg_color="transparent")
-        self.raw_stream_container.pack(fill="x", padx=14, pady=(0, 10))
+        self.raw_stream_container.pack(fill="x", padx=12, pady=(0, 8))
 
         self.btn_toggle_raw = ctk.CTkButton(
             self.raw_stream_container,
-            text="▸ View Raw Stream",
+            text="▸ View Raw Telemetry Stream",
             font=("Segoe UI", 10),
             fg_color="transparent",
             hover_color=PALETTE["card_soft"],
             text_color=PALETTE["muted"],
-            height=24,
+            height=22,
             anchor="w",
             command=self._toggle_raw_stream,
         )
@@ -712,113 +1350,109 @@ class IncidentReviewDetail(ctk.CTkFrame):
             wrap="word",
         )
 
-        # 4. Operator Audit & Notes Section
-        validation_wrap = ctk.CTkFrame(
+        # 4. Operator Audit Notes with Fast Preset Tags
+        notes_wrap = ctk.CTkFrame(
             self.details_card,
             fg_color=PALETTE["card_soft"],
-            corner_radius=14,
+            corner_radius=12,
             border_width=1,
             border_color=PALETTE["border"],
         )
-        validation_wrap.pack(fill="x", padx=16, pady=(0, 16))
+        notes_wrap.pack(fill="x", padx=12, pady=(0, 12))
 
-        val_head = ctk.CTkFrame(validation_wrap, fg_color="transparent")
-        val_head.pack(fill="x", padx=14, pady=(12, 6))
+        notes_head = ctk.CTkFrame(notes_wrap, fg_color="transparent")
+        notes_head.pack(fill="x", padx=12, pady=(10, 4))
 
         ctk.CTkLabel(
-            val_head,
-            text="OPERATOR AUDIT & NOTES",
+            notes_head,
+            text="INVESTIGATION NOTES",
             font=("Segoe UI", 9, "bold"),
             text_color=PALETTE["muted"],
             anchor="w",
         ).pack(side="left")
 
+        # Fast preset comment chips
+        preset_row = ctk.CTkFrame(notes_wrap, fg_color="transparent")
+        preset_row.pack(fill="x", padx=12, pady=(0, 6))
+
+        presets = [
+            ("Weapon", "Confirmed weapon threat, escalating to duty officer."),
+            ("Contraband", "Contraband detected, inspection requested."),
+            ("False Pos", "Benign activity; verified false positive."),
+            ("Clear", "Event reviewed and cleared."),
+        ]
+        for btn_txt, phrase in presets:
+            ctk.CTkButton(
+                preset_row,
+                text=f"+ {btn_txt}",
+                height=22,
+                corner_radius=4,
+                fg_color=PALETTE["card"],
+                hover_color=PALETTE["panel_alt"],
+                text_color=PALETTE["muted"],
+                font=("Segoe UI", 9),
+                command=lambda p=phrase: self._insert_comment_preset(p),
+            ).pack(side="left", padx=(0, 4))
+
         self.comment_box = ctk.CTkTextbox(
-            validation_wrap,
-            height=62,
-            font=("Segoe UI", 12),
-            fg_color=PALETTE["card"],
-            border_width=1,
-            border_color=PALETTE["border"],
-            text_color=PALETTE["text"],
-            corner_radius=10,
-        )
-        self.comment_box.pack(fill="x", padx=14, pady=(0, 10))
-
-        actions = ctk.CTkFrame(validation_wrap, fg_color="transparent")
-        actions.pack(fill="x", padx=14, pady=(0, 10))
-        actions.grid_columnconfigure((0, 1), weight=1)
-
-        ctk.CTkButton(
-            actions,
-            text="Confirm Incident",
-            height=40,
-            corner_radius=10,
-            fg_color=PALETTE["danger"],
-            hover_color="#b91c1c",
-            text_color=("#ffffff", "#ffffff"),
-            font=("Segoe UI Semibold", 12),
-            command=lambda: self.update_status("CONFIRMED"),
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
-
-        ctk.CTkButton(
-            actions,
-            text="False Alarm",
-            height=40,
-            corner_radius=10,
-            fg_color=PALETTE["success"],
-            hover_color="#15803d",
-            text_color=("#ffffff", "#ffffff"),
-            font=("Segoe UI Semibold", 12),
-            command=lambda: self.update_status("FALSE ALARM"),
-        ).grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
-
-        ctk.CTkButton(
-            actions,
-            text="Mark for Review",
-            height=36,
-            corner_radius=10,
-            fg_color=PALETTE["accent"],
-            hover_color=PALETTE["accent_hover"],
-            text_color=PALETTE["text"],
-            font=("Segoe UI Semibold", 11),
-            command=lambda: self.update_status("NEEDS REVIEW"),
-        ).grid(row=1, column=0, sticky="ew", padx=(0, 4))
-
-        self.btn_extract = ctk.CTkButton(
-            actions,
-            text="Extract Dataset",
-            height=36,
-            corner_radius=10,
-            fg_color=PALETTE["card"],
-            border_width=1,
-            border_color=PALETTE["border"],
-            hover_color=PALETTE["panel_alt"],
-            text_color=PALETTE["text"],
-            font=("Segoe UI Semibold", 11),
-            command=self.extract_to_dataset,
-        )
-        self.btn_extract.grid(row=1, column=1, sticky="ew", padx=(4, 0))
-
-        self.feedback_label = ctk.CTkLabel(
-            validation_wrap,
-            text="No incident selected.",
+            notes_wrap,
+            height=68,
             font=("Segoe UI", 11),
-            text_color=PALETTE["subtle"],
-            justify="left",
-            wraplength=340,
-            anchor="w",
+            fg_color=PALETTE["card"],
+            border_width=1,
+            border_color=PALETTE["border"],
+            text_color=PALETTE["text"],
+            corner_radius=8,
+            wrap="word",
         )
-        self.feedback_label.pack(fill="x", padx=14, pady=(8, 12))
+        self.comment_box.pack(fill="x", padx=12, pady=(0, 8))
+
+        # Retention Notice
+        retention_row = ctk.CTkFrame(notes_wrap, fg_color="transparent")
+        retention_row.pack(fill="x", padx=12, pady=(0, 8))
+
+        ctk.CTkLabel(
+            retention_row,
+            text="RETENTION POLICY:",
+            font=("Segoe UI", 8, "bold"),
+            text_color=PALETTE["muted"],
+        ).pack(side="left")
+
+        self.retention_label = ctk.CTkLabel(
+            retention_row,
+            textvariable=self.detail_vars["retention"],
+            font=("Segoe UI Semibold", 10),
+            text_color=PALETTE["text"],
+        )
+        self.retention_label.pack(side="left", padx=(4, 0))
+
+    def _insert_comment_preset(self, phrase: str):
+        existing = self.comment_box.get("1.0", tk.END).strip()
+        if existing:
+            new_text = f"{existing} | {phrase}"
+        else:
+            new_text = phrase
+        self.comment_box.delete("1.0", tk.END)
+        self.comment_box.insert("1.0", new_text)
+
+    def copy_event_id(self):
+        eid = self.detail_vars["id"].get()
+        if eid and eid != "No selection":
+            self.clipboard_clear()
+            self.clipboard_append(eid)
+            self.feedback_label.configure(
+                text=f"Copied Record ID to clipboard: {eid}",
+                text_color=PALETTE["accent"],
+            )
 
     def _toggle_raw_stream(self):
         if self._raw_stream_visible:
             self.raw_stream_box.pack_forget()
-            self.btn_toggle_raw.configure(text="▸ View Raw Stream")
+            self.btn_toggle_raw.configure(text="▸ View Raw Telemetry Stream")
             self._raw_stream_visible = False
         else:
             self.raw_stream_box.pack(fill="x", pady=(4, 0))
-            self.btn_toggle_raw.configure(text="▾ Hide Raw Stream")
+            self.btn_toggle_raw.configure(text="▾ Hide Raw Telemetry Stream")
             self._raw_stream_visible = True
 
     def _update_threat_badges(self, parsed_threats, raw_type):
@@ -858,53 +1492,90 @@ class IncidentReviewDetail(ctk.CTkFrame):
             badge = ctk.CTkFrame(
                 self.threat_badges_frame,
                 fg_color=bg_badge,
-                corner_radius=10,
+                corner_radius=8,
                 border_width=1,
                 border_color=PALETTE["border"],
             )
-            badge.pack(fill="x", pady=3)
+            badge.pack(fill="x", pady=2)
 
             left_side = ctk.CTkFrame(badge, fg_color="transparent")
-            left_side.pack(side="left", padx=10, pady=6)
+            left_side.pack(side="left", padx=8, pady=4)
 
             tag_lbl = ctk.CTkLabel(
                 left_side,
                 text=threat["tag"],
-                font=("Segoe UI", 9, "bold"),
+                font=("Segoe UI", 8, "bold"),
                 text_color=fg_tag,
                 fg_color=PALETTE["card"],
                 corner_radius=4,
-                padx=6,
+                padx=5,
                 pady=1,
             )
-            tag_lbl.pack(side="left", padx=(0, 8))
+            tag_lbl.pack(side="left", padx=(0, 6))
 
             name_lbl = ctk.CTkLabel(
                 left_side,
                 text=threat["name"],
-                font=("Segoe UI Semibold", 12),
+                font=("Segoe UI Semibold", 11),
                 text_color=PALETTE["text"],
                 anchor="w",
             )
             name_lbl.pack(side="left")
 
             right_side = ctk.CTkFrame(badge, fg_color="transparent")
-            right_side.pack(side="right", padx=10, pady=6)
+            right_side.pack(side="right", padx=8, pady=4)
 
             det_lbl = ctk.CTkLabel(
                 right_side,
                 text=threat["detail"],
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 10),
                 text_color=PALETTE["muted"],
                 anchor="e",
             )
             det_lbl.pack(side="right")
 
-    def load_incident(self, data):
+    # =========================================================================
+    # INCIDENT LOADING & FRAME 0 POSTER PREVIEW
+    # =========================================================================
+    def load_incident(self, data, update_inbox_selection=True):
+        self.stop_playback()
         self.current_incident = data
-        self.detail_vars["id"].set(data.get("event_id", "-"))
+        eid = data.get("event_id", "-")
+        self.selected_event_id = eid
+
+        # Update highlighted state in inbox sidebar
+        if update_inbox_selection:
+            for cid, card_widget in self.inbox_cards.items():
+                if cid == eid:
+                    card_widget.configure(
+                        fg_color=PALETTE["card_selected"],
+                        border_color=PALETTE["accent"],
+                        border_width=2,
+                    )
+                else:
+                    card_widget.configure(
+                        fg_color=PALETTE["card"],
+                        border_color=PALETTE["border"],
+                        border_width=1,
+                    )
+
+        self.detail_vars["id"].set(eid)
         self.detail_vars["camera"].set(f"Cam {data.get('camera_id', '-')}")
         self.detail_vars["time"].set(self._format_timestamp(data.get("timestamp_start", "")))
+
+        # Compute duration if timestamps available
+        t_start = data.get("timestamp_start")
+        t_end = data.get("timestamp_end")
+        duration_desc = "-"
+        if t_start and t_end:
+            try:
+                d1 = datetime.fromisoformat(t_start)
+                d2 = datetime.fromisoformat(t_end)
+                delta_sec = max(0, int((d2 - d1).total_seconds()))
+                duration_desc = f"{delta_sec}s ({_format_time_sec(delta_sec)})"
+            except Exception:
+                pass
+        self.detail_vars["duration"].set(duration_desc)
 
         raw_type = data.get("event_type", "")
         parsed_threats = parse_threat_telemetry(raw_type)
@@ -915,7 +1586,6 @@ class IncidentReviewDetail(ctk.CTkFrame):
             self.detail_vars["type"].set(raw_type or "Unknown")
 
         self.detail_vars["reviewed_by"].set(data.get("reviewed_by") or "Unassigned")
-
         retention = data.get("retention_days")
         self.detail_vars["retention"].set(f"{retention} days" if retention else "Not set")
 
@@ -927,33 +1597,80 @@ class IncidentReviewDetail(ctk.CTkFrame):
         self.comment_box.delete("1.0", tk.END)
         self.comment_box.insert("1.0", data.get("comments") or "")
 
+        # Open video and load Frame 0 poster preview immediately
         video_path = data.get("video_path", "")
         if video_path and os.path.exists(video_path):
-            self.video_label.configure(text="Playback ready.\nClick Play Evidence to review the clip.", image="")
             self.playback_state.configure(text=os.path.basename(video_path))
-            self.playback_note.configure(text="Loaded evidence clip is ready for review and time seeking.")
+            self._load_video_poster(video_path)
             self.feedback_label.configure(
-                text="Incident loaded. Review notes and select the appropriate audit decision.",
+                text="Evidence clip loaded. Review video and audit notes before saving decision.",
                 text_color=PALETTE["muted"],
             )
+            self.playback_note.configure(
+                text="Loaded evidence clip is ready for playback and forensic scrubbing."
+            )
         else:
-            self.video_label.configure(text="Video file not found.", image="")
             self.playback_state.configure(text="Missing evidence file")
-            self.playback_note.configure(text="This incident record does not currently have a playable clip.")
+            self.video_label.configure(
+                text="Recorded evidence clip could not be found on disk.",
+                image=None,
+            )
+            self.timeline_slider.set(0)
+            self.time_current_lbl.configure(text="00:00")
+            self.time_total_lbl.configure(text="00:00")
             self.feedback_label.configure(
-                text="Incident loaded, but the stored video file could not be found.",
+                text="Incident loaded, but associated MP4 recording is missing.",
                 text_color=PALETTE["warning"],
             )
 
-        self.stop_playback()
+    def _load_video_poster(self, video_path):
+        """Extracts and renders Frame 0 immediately so canvas is never a blank white box."""
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                self.video_label.configure(text="Failed to open video file.", image=None)
+                return
 
+            self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
+            self.duration_s = self.total_frames / self.fps if self.fps > 0 else 0.0
+
+            # Configure timeline slider
+            steps = max(1, int(self.duration_s * 10))
+            self.timeline_slider.configure(
+                from_=0,
+                to=max(1.0, self.duration_s),
+                number_of_steps=steps,
+            )
+            self.timeline_slider.set(0)
+            self.current_sec = 0.0
+
+            self.time_current_lbl.configure(text="00:00")
+            self.time_total_lbl.configure(text=_format_time_sec(self.duration_s))
+
+            # Read frame 0
+            ret, frame = cap.read()
+            if ret:
+                self._last_raw_frame = frame.copy()
+                self._display_frame(frame)
+            cap.release()
+        except Exception as e:
+            print(f"_load_video_poster error: {e}")
+            self.video_label.configure(text="Error rendering video poster.", image=None)
+
+    # =========================================================================
+    # VIDEO PLAYBACK & FORENSIC TIMELINE SCRUBBING
+    # =========================================================================
     def open_video(self):
         if self.is_playing:
-            self.stop_playback()
+            self.pause_playback()
             return
 
         if not self.current_incident:
-            self.feedback_label.configure(text="Select an incident from the history log first.", text_color=PALETTE["warning"])
+            self.feedback_label.configure(
+                text="Select an incident from the queue first.",
+                text_color=PALETTE["warning"],
+            )
             return
 
         path = os.path.abspath(self.current_incident.get("video_path", ""))
@@ -964,19 +1681,51 @@ class IncidentReviewDetail(ctk.CTkFrame):
         self.start_playback(path)
 
     def start_playback(self, path):
-        self.stop_playback()
-        self.video_cap = cv2.VideoCapture(path)
-        if not self.video_cap.isOpened():
-            messagebox.showerror("Error", "Failed to open the stored evidence clip.")
-            return
+        if self._playback_job:
+            self.after_cancel(self._playback_job)
+            self._playback_job = None
+
+        if not self.video_cap or not self.video_cap.isOpened():
+            self.video_cap = cv2.VideoCapture(path)
+            if not self.video_cap.isOpened():
+                messagebox.showerror("Error", "Failed to open the stored evidence clip.")
+                return
+
+            self.total_frames = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.fps = self.video_cap.get(cv2.CAP_PROP_FPS) or 20.0
+            self.duration_s = self.total_frames / self.fps if self.fps > 0 else 0.0
+
+            # Seek to current scrub position if starting mid-way
+            target_frame = int(self.current_sec * self.fps)
+            if target_frame > 0:
+                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, min(target_frame, self.total_frames - 1))
 
         self.is_playing = True
-        self.btn_play.configure(text="Stop Playback", fg_color=PALETTE["danger"], hover_color="#b94f4f")
+        self.btn_play.configure(
+            text="Pause Evidence",
+            fg_color=PALETTE["danger"],
+            hover_color="#b94f4f",
+        )
         self.feedback_label.configure(
-            text="Playback started. Review the evidence before saving a decision.",
+            text="Playback active. Reviewing evidence clip.",
             text_color=PALETTE["muted"],
         )
         self._play_next_frame()
+
+    def pause_playback(self):
+        self.is_playing = False
+        if self._playback_job:
+            self.after_cancel(self._playback_job)
+            self._playback_job = None
+        self.btn_play.configure(
+            text="Play Evidence",
+            fg_color=PALETTE["accent"],
+            hover_color=PALETTE["accent_hover"],
+        )
+        self.feedback_label.configure(
+            text="Playback paused. Retaining current forensic frame.",
+            text_color=PALETTE["muted"],
+        )
 
     def stop_playback(self):
         self.is_playing = False
@@ -991,26 +1740,96 @@ class IncidentReviewDetail(ctk.CTkFrame):
             fg_color=PALETTE["accent"],
             hover_color=PALETTE["accent_hover"],
         )
-        if self.current_incident:
-            self.video_label.configure(image="")
 
-    def seek_video(self, seconds):
-        if not self.video_cap:
+    def _on_scrub_start(self):
+        self._is_scrubbing = True
+
+    def _on_scrub_end(self):
+        self._is_scrubbing = False
+
+    def _on_slider_scrub(self, val):
+        self.current_sec = float(val)
+        self.time_current_lbl.configure(text=_format_time_sec(self.current_sec))
+
+        # Seek in video
+        if not self.current_incident:
+            return
+        video_path = self.current_incident.get("video_path")
+        if not video_path or not os.path.exists(video_path):
             return
 
-        fps = self.video_cap.get(cv2.CAP_PROP_FPS) or 20
-        current_frame = int(self.video_cap.get(cv2.CAP_PROP_POS_FRAMES))
-        target_frame = max(0, current_frame + int(seconds * fps))
-        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        if not self.video_cap or not self.video_cap.isOpened():
+            self.video_cap = cv2.VideoCapture(video_path)
+            self.fps = self.video_cap.get(cv2.CAP_PROP_FPS) or 20.0
+            self.total_frames = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        target_frame = int(self.current_sec * self.fps)
+        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, min(target_frame, max(0, self.total_frames - 1)))
 
         if not self.is_playing:
             self._render_single_frame()
+
+    def seek_video(self, delta_seconds):
+        if not self.current_incident:
+            return
+        video_path = self.current_incident.get("video_path")
+        if not video_path or not os.path.exists(video_path):
+            return
+
+        if not self.video_cap or not self.video_cap.isOpened():
+            self.video_cap = cv2.VideoCapture(video_path)
+            self.fps = self.video_cap.get(cv2.CAP_PROP_FPS) or 20.0
+            self.total_frames = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        self.current_sec = max(0.0, min(self.duration_s, self.current_sec + delta_seconds))
+        target_frame = int(self.current_sec * self.fps)
+        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, min(target_frame, max(0, self.total_frames - 1)))
+
+        self.timeline_slider.set(self.current_sec)
+        self.time_current_lbl.configure(text=_format_time_sec(self.current_sec))
+
+        if not self.is_playing:
+            self._render_single_frame()
+
+    def _toggle_loop(self):
+        self.is_looping = not self.is_looping
+        if self.is_looping:
+            self.btn_loop.configure(
+                text="🔄 Loop: ON",
+                fg_color=PALETTE["accent"],
+                text_color="#ffffff",
+            )
+        else:
+            self.btn_loop.configure(
+                text="🔄 Loop: OFF",
+                fg_color=PALETTE["card_soft"],
+                text_color=PALETTE["muted"],
+            )
+
+    def snapshot_current_frame(self):
+        if self._last_raw_frame is None:
+            messagebox.showinfo("Snapshot", "No video frame currently loaded to capture.")
+            return
+
+        os.makedirs("snapshots", exist_ok=True)
+        eid = self.detail_vars["id"].get()
+        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join("snapshots", f"snapshot_{eid}_{now_str}.jpg")
+        try:
+            cv2.imwrite(out_path, self._last_raw_frame)
+            self.feedback_label.configure(
+                text=f"📸 Forensic snapshot saved: {out_path}",
+                text_color=PALETTE["accent"],
+            )
+        except Exception as e:
+            messagebox.showerror("Snapshot Error", f"Failed to save snapshot: {e}")
 
     def _render_single_frame(self):
         if not self.video_cap:
             return
         ret, frame = self.video_cap.read()
         if ret:
+            self._last_raw_frame = frame.copy()
             self._display_frame(frame)
 
     def _play_next_frame(self):
@@ -1019,49 +1838,60 @@ class IncidentReviewDetail(ctk.CTkFrame):
 
         ret, frame = self.video_cap.read()
         if not ret:
-            self.stop_playback()
-            self.feedback_label.configure(
-                text="Playback finished. You can start the clip again or save a decision.",
-                text_color=PALETTE["muted"],
-            )
-            return
+            if self.is_looping:
+                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                self.current_sec = 0.0
+                self.timeline_slider.set(0)
+                self.time_current_lbl.configure(text="00:00")
+                self._playback_job = self.after(45, self._play_next_frame)
+                return
+            else:
+                self.pause_playback()
+                self.feedback_label.configure(
+                    text="Playback completed. Frame retained for review.",
+                    text_color=PALETTE["muted"],
+                )
+                return
 
+        self._last_raw_frame = frame.copy()
         self._display_frame(frame)
+
+        if not self._is_scrubbing:
+            cur_frame = self.video_cap.get(cv2.CAP_PROP_POS_FRAMES)
+            self.current_sec = cur_frame / self.fps if self.fps > 0 else 0.0
+            self.timeline_slider.set(self.current_sec)
+            self.time_current_lbl.configure(text=_format_time_sec(self.current_sec))
+
         self._playback_job = self.after(45, self._play_next_frame)
 
     def _display_frame(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Use parent container's dimensions to prevent feedback loop resizing
         c_width = self.video_player_container.winfo_width()
         c_height = self.video_player_container.winfo_height()
-        
-        # Account for video_label's grid padding (padx=14, pady=14 -> 28 total)
-        avail_w = c_width - 28
-        avail_h = c_height - 28
 
-        if avail_w > 10 and avail_h > 10:
-            # Preserve original aspect ratio
-            img_h, img_w = frame.shape[:2]
-            ratio = min(avail_w / img_w, avail_h / img_h)
-            new_w = max(1, int(img_w * ratio))
-            new_h = max(1, int(img_h * ratio))
-            
-            frame = cv2.resize(frame, (new_w, new_h))
-            target_size = (new_w, new_h)
-        else:
-            target_size = (frame.shape[1], frame.shape[0])
+        avail_w = max(100, c_width - 24)
+        avail_h = max(100, c_height - 24)
 
-        image = Image.fromarray(frame)
-        ctk_image = ctk.CTkImage(light_image=image, dark_image=image, size=target_size)
+        img_h, img_w = frame.shape[:2]
+        ratio = min(avail_w / img_w, avail_h / img_h)
+        new_w = max(1, int(img_w * ratio))
+        new_h = max(1, int(img_h * ratio))
+
+        frame_resized = cv2.resize(frame, (new_w, new_h))
+        image = Image.fromarray(frame_resized)
+        ctk_image = ctk.CTkImage(light_image=image, dark_image=image, size=(new_w, new_h))
         self._current_frame_img = ctk_image
         self.video_label.configure(image=ctk_image, text="")
 
     def _check_playback_stop(self):
-        if not self.is_playing and self.btn_play.cget("text") == "Stop Playback":
+        if not self.is_playing and self.btn_play.cget("text") == "Pause Evidence":
             self.stop_playback()
         self.after(1000, self._check_playback_stop)
 
+    # =========================================================================
+    # AUDIT DECISION & CONTINUOUS AUTO-ADVANCE TRIAGE
+    # =========================================================================
     def update_status(self, status):
         if not self.current_incident:
             self.feedback_label.configure(
@@ -1080,6 +1910,8 @@ class IncidentReviewDetail(ctk.CTkFrame):
         retention_map = {"CONFIRMED": 90, "FALSE ALARM": 7, "NEEDS REVIEW": 15}
         retention = retention_map.get(status, 15)
 
+        event_id = self.current_incident["event_id"]
+
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -1095,7 +1927,7 @@ class IncidentReviewDetail(ctk.CTkFrame):
                     self.current_user,
                     review_time,
                     retention,
-                    self.current_incident["event_id"],
+                    event_id,
                 ),
             )
             conn.commit()
@@ -1111,15 +1943,59 @@ class IncidentReviewDetail(ctk.CTkFrame):
             self.status_chip.configure(text=status_text, text_color=status_color)
             self.detail_vars["reviewed_by"].set(self.current_user)
             self.detail_vars["retention"].set(f"{retention} days")
-            self.feedback_label.configure(
-                text=f"Audit saved at {review_time}. Decision recorded as {status_text}.",
-                text_color=status_color,
-            )
+
+            # Update cache in all_incidents
+            for inc in self.all_incidents:
+                if inc["event_id"] == event_id:
+                    inc["review_status"] = status
+                    inc["comments"] = comments
+                    inc["reviewed_by"] = self.current_user
+                    inc["reviewed_at"] = review_time
+                    inc["retention_days"] = retention
+                    break
 
             if self.on_update_callback:
                 self.on_update_callback()
+
+            # Refresh inbox to update card badge
+            self.refresh_inbox(auto_select_first=False)
+
+            # Continuous Auto-Advance: automatically select next pending incident
+            self.select_next_pending(after_event_id=event_id, last_status=status_text)
         except Exception as e:
             messagebox.showerror("Database Error", str(e))
+
+    def select_next_pending(self, after_event_id=None, last_status=""):
+        next_pending = None
+        found_target = False if after_event_id else True
+
+        for inc in self.all_incidents:
+            if not found_target:
+                if inc["event_id"] == after_event_id:
+                    found_target = True
+                continue
+            if (inc.get("review_status") or "PENDING").upper() == "PENDING":
+                next_pending = inc
+                break
+
+        # Wrap around to beginning of queue if not found after
+        if not next_pending:
+            for inc in self.all_incidents:
+                if inc["event_id"] != after_event_id and (inc.get("review_status") or "PENDING").upper() == "PENDING":
+                    next_pending = inc
+                    break
+
+        if next_pending:
+            self.load_incident(next_pending, update_inbox_selection=True)
+            self.feedback_label.configure(
+                text=f"Decision '{last_status}' recorded. Auto-advanced to next pending incident: {next_pending['event_id']}",
+                text_color=PALETTE["accent"],
+            )
+        else:
+            self.feedback_label.configure(
+                text=f"Decision '{last_status}' recorded. All pending incidents have been triaged!",
+                text_color=PALETTE["success"],
+            )
 
     def _format_timestamp(self, raw_timestamp):
         if not raw_timestamp:
@@ -1134,7 +2010,7 @@ class IncidentReviewDetail(ctk.CTkFrame):
         if not self.current_incident:
             messagebox.showerror("Error", "No incident selected.")
             return
-        
+
         status = (self.current_incident.get("review_status") or "PENDING").upper()
         if status != "CONFIRMED":
             messagebox.showinfo("Extraction Restricted", "Only CONFIRMED incidents can be extracted to the dataset.")
@@ -1151,12 +2027,10 @@ class IncidentReviewDetail(ctk.CTkFrame):
         safe_slug = re.sub(r'[^\w\-_\.]', '_', primary_slug).strip('_')[:40] or "incident"
         event_id = self.current_incident.get("event_id", "incident")
 
-        # Create target directories
         dataset_base = os.path.join(os.path.dirname(self.db_path), "DatasetRecordings")
         target_dir = os.path.join(dataset_base, safe_slug)
         os.makedirs(target_dir, exist_ok=True)
 
-        # Copy video
         target_vid = os.path.join(target_dir, f"{event_id}.mp4")
         try:
             shutil.copy2(video_path, target_vid)
@@ -1164,7 +2038,6 @@ class IncidentReviewDetail(ctk.CTkFrame):
             messagebox.showerror("Error", f"Failed to copy video: {e}")
             return
 
-        # Extract frame
         target_img = os.path.join(target_dir, f"{event_id}_frame.jpg")
         try:
             cap = cv2.VideoCapture(video_path)
@@ -1178,7 +2051,7 @@ class IncidentReviewDetail(ctk.CTkFrame):
                 cap.release()
         except Exception as e:
             print(f"Frame extraction failed: {e}")
-            
+
         messagebox.showinfo("Extraction Complete", f"Saved to DatasetRecordings/{safe_slug}\n- {event_id}.mp4\n- {event_id}_frame.jpg")
 
 

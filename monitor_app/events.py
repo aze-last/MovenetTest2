@@ -42,6 +42,11 @@ _global_event_bus = EventBus()
 def get_event_bus() -> EventBus:
     return _global_event_bus
 
+# Incident and Alert Event Names
+INCIDENT_START = "INCIDENT_START"
+INCIDENT_STOP = "INCIDENT_STOP"
+DECISION_TRIGGER = "DECISION_TRIGGER"
+
 # Telemetry Event Names
 TELEM_FRAME_READ = "TELEM_FRAME_READ"
 TELEM_PIPELINE_COMPLETE = "TELEM_PIPELINE_COMPLETE"

@@ -156,3 +156,72 @@ def test_incident_threat_parsing_and_adversarial_layout(tk_root):
 
     screen.stop_monitoring()
     frame.destroy()
+
+
+def test_unified_3pane_review_center_and_triage(tk_root):
+    frame = ctk.CTkFrame(tk_root)
+    frame.pack()
+    screen = IncidentsScreen(frame)
+    review = screen.review_tab
+
+    # 1. Verify 3-Pane Architecture Structure
+    assert hasattr(review, "inbox_panel")
+    assert hasattr(review, "left_panel")
+    assert hasattr(review, "right_panel")
+    assert hasattr(review, "timeline_slider")
+    assert hasattr(review, "time_current_lbl")
+    assert hasattr(review, "time_total_lbl")
+    assert hasattr(review, "btn_confirm")
+    assert hasattr(review, "btn_false")
+    assert hasattr(review, "btn_review")
+    assert hasattr(review, "btn_snapshot")
+    assert hasattr(review, "btn_loop")
+
+    # 2. Test Header Card Filter Interactions
+    screen._filter_from_header("Pending Queue")
+    assert review.current_filter == "PENDING"
+
+    screen._filter_from_header("Confirmed")
+    assert review.current_filter == "CONFIRMED"
+
+    screen._filter_from_header("Needs Review")
+    assert review.current_filter == "NEEDS REVIEW"
+
+    # Reset filter
+    review.set_queue_filter("ALL")
+    assert review.current_filter == "ALL"
+
+    # 3. Test Preset Comment Insertion
+    review.comment_box.delete("1.0", tk.END)
+    review._insert_comment_preset("Automated Forensic Verification Note")
+    assert "Automated Forensic Verification Note" in review.comment_box.get("1.0", tk.END)
+
+    review._insert_comment_preset("Secondary Addendum")
+    full_comment = review.comment_box.get("1.0", tk.END)
+    assert "Automated Forensic Verification Note" in full_comment
+    assert "Secondary Addendum" in full_comment
+
+    # 4. Test Auto-Advance Queue Logic
+    review.all_incidents = [
+        {"event_id": "TEST_INC_001", "camera_id": "1", "event_type": "Weapon (90%)", "review_status": "CONFIRMED"},
+        {"event_id": "TEST_INC_002", "camera_id": "2", "event_type": "Cellphone (75%)", "review_status": "PENDING"},
+        {"event_id": "TEST_INC_003", "camera_id": "3", "event_type": "Fight (80%)", "review_status": "PENDING"},
+    ]
+    review.select_next_pending(after_event_id="TEST_INC_001")
+    assert review.selected_event_id == "TEST_INC_002"
+
+    review.select_next_pending(after_event_id="TEST_INC_002")
+    assert review.selected_event_id == "TEST_INC_003"
+
+    # 5. Test Copy Event ID
+    review.copy_event_id()
+
+    # 6. Test Loop Toggle
+    assert review.is_looping is False
+    review._toggle_loop()
+    assert review.is_looping is True
+    review._toggle_loop()
+    assert review.is_looping is False
+
+    screen.stop_monitoring()
+    frame.destroy()

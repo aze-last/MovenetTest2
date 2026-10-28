@@ -85,6 +85,20 @@ class CellWatchApp(ctk.CTk):
 
         self.title(self.app_profile["system_name"])
         self.geometry(utils.WINDOW_SIZE)
+        
+        # Load Window & Taskbar Icon
+        try:
+            ico_candidates = [
+                os.path.join(os.path.dirname(__file__), "assets", "app_icon.ico"),
+                os.path.join(os.path.abspath("."), "monitor_app", "assets", "app_icon.ico"),
+                os.path.join(os.path.abspath("."), "assets", "app_icon.ico"),
+            ]
+            for ico in ico_candidates:
+                if os.path.exists(ico):
+                    self.iconbitmap(ico)
+                    break
+        except Exception as e:
+            print(f"Could not load window icon: {e}")
         self.configure(bg=self.NAV_PALETTE["bar"])
         self.attributes("-alpha", 1.0) # Ensure window is 100% opaque
         
@@ -309,7 +323,16 @@ class CellWatchApp(ctk.CTk):
                     text_color=self.NAV_PALETTE["text"],
                 )
 
+    def _on_incident_alert_nav(self, *args, **kwargs):
+        def _notify():
+            if getattr(self, "current_screen", None) != "Incidents" and "Incidents" in self.nav_buttons:
+                self.nav_buttons["Incidents"].configure(text="Incidents 🚨")
+        self.after(0, _notify)
+
     def switch_screen(self, screen_name, initial_incident_id=None):
+        if screen_name == "Incidents":
+            if "Incidents" in getattr(self, "nav_buttons", {}):
+                self.nav_buttons["Incidents"].configure(text="Incidents")
         # Clear current screen
         for widget in self.container.winfo_children():
             # If it has a 'stop_monitoring' method, call it (for camera view)
