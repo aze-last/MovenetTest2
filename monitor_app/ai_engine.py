@@ -158,13 +158,18 @@ class DynamicContrabandTracker:
                         best_iou = iou
                         best_match_id = tid
 
-                # Centroid proximity fallback if box shifted rapidly (within 90 px)
+                # Centroid proximity fallback if box shifted rapidly (within 60 px)
+                # CRITICAL: Only allow centroid fallback if the candidate track was seen
+                # recently (lost_count == 0). Do NOT allow a newly appeared object to
+                # hijack a dead, lost, or dismissed track!
                 if best_match_id is None:
                     bx_c = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
-                    best_dist = 90.0
+                    best_dist = 60.0
                     for tid, trk in active_tracks.items():
                         if tid in matched_track_ids or trk["cls_id"] != cls_id:
                             continue
+                        if trk.get("lost_count", 0) > 0:
+                            continue  # Do not resurrect lost/dismissed tracks via distance
                         tx_c = ((trk["box"][0] + trk["box"][2]) / 2, (trk["box"][1] + trk["box"][3]) / 2)
                         dist = ((bx_c[0] - tx_c[0])**2 + (bx_c[1] - tx_c[1])**2)**0.5
                         if dist < best_dist:
@@ -192,6 +197,8 @@ class DynamicContrabandTracker:
                     "track_id": assigned_id,
                     "box": box,
                     "score": score,
+                    "conf": score,
+                    "confidence": score,
                     "cls_id": cls_id
                 })
 
@@ -864,6 +871,7 @@ class MotionOptimizedEngine:
                 current_det_keys = set()
                 yolo_hyst_ttl = int(get_config("yolo", "detection_hysteresis_frames", 5))
 
+                raw_candidates = []
                 if results:
                     for r in results:
                         if r.boxes is None or len(r.boxes) == 0:
@@ -882,42 +890,59 @@ class MotionOptimizedEngine:
                                       f"conf={conf:.3f} box=({x1},{y1},{x2},{y2})", flush=True)
 
                             if cls_id in CLASS_NAMES and conf > CONF_THRESHOLDS.get(cls_id, fallback_thr):
-                                # Generate unique key to prevent overwrite collisions.
-                                # Phase B2: tracked -> track_id; untracked -> quantized spatial grid
-                                # bucket (NOT raw x1,y1) so a stationary object's jitter maps to one
-                                # stable hysteresis key instead of a fresh key every frame.
-                                if track_id != -1:
-                                    cache_key = track_id
-                                    effective_track_id = track_id
-                                else:
-                                    # Dynamic tracking fallback: assigns monotonic, stable track IDs
-                                    # that never collide between different objects shown in the same spot
-                                    trk_res = self.contraband_tracker.update(
-                                        cam_id, [[x1, y1, x2, y2]], [conf], [cls_id]
-                                    )
-                                    effective_track_id = trk_res[0]["track_id"] if trk_res else (abs(hash((cls_id, x1, y1))) % 9000 + 1000)
-                                    cache_key = effective_track_id
-                                current_det_keys.add(cache_key)
-                                
-                                # Update hysteresis cache
-                                if cam_id not in self.yolo_hysteresis:
-                                    self.yolo_hysteresis[cam_id] = {}
-                                
-                                self.yolo_hysteresis[cam_id][cache_key] = {
-                                    "conf": conf,
+                                raw_candidates.append({
                                     "box": [x1, y1, x2, y2],
-                                    "track_id": effective_track_id,
+                                    "conf": conf,
                                     "cls_id": cls_id,
-                                    "ttl": yolo_hyst_ttl
-                                }
-
-                                detections_found.append({
-                                    "name": CLASS_NAMES[cls_id],
-                                    "conf": conf,
-                                    "box": [x1, y1, x2, y2],
-                                    "track_id": effective_track_id,
-                                    "source": "combined"
+                                    "track_id": track_id
                                 })
+
+                # Batch track update for untracked contraband detections
+                untracked_items = [c for c in raw_candidates if c["track_id"] == -1]
+                batch_boxes = [c["box"] for c in untracked_items]
+                batch_confs = [c["conf"] for c in untracked_items]
+                batch_cls = [c["cls_id"] for c in untracked_items]
+
+                # Step tracker (even when empty) so lost tracks decay naturally
+                trk_results = self.contraband_tracker.update(cam_id, batch_boxes, batch_confs, batch_cls)
+                trk_idx = 0
+
+                for cand in raw_candidates:
+                    cls_id = cand["cls_id"]
+                    conf = cand["conf"]
+                    x1, y1, x2, y2 = cand["box"]
+                    track_id = cand["track_id"]
+
+                    if track_id != -1:
+                        effective_track_id = track_id
+                    else:
+                        effective_track_id = trk_results[trk_idx]["track_id"] if trk_idx < len(trk_results) else (abs(hash((cls_id, x1, y1))) % 9000 + 1000)
+                        trk_idx += 1
+
+                    cache_key = effective_track_id
+                    current_det_keys.add(cache_key)
+
+                    # Update hysteresis cache
+                    if cam_id not in self.yolo_hysteresis:
+                        self.yolo_hysteresis[cam_id] = {}
+
+                    self.yolo_hysteresis[cam_id][cache_key] = {
+                        "conf": conf,
+                        "confidence": conf,
+                        "box": [x1, y1, x2, y2],
+                        "track_id": effective_track_id,
+                        "cls_id": cls_id,
+                        "ttl": yolo_hyst_ttl
+                    }
+
+                    detections_found.append({
+                        "name": CLASS_NAMES[cls_id],
+                        "conf": conf,
+                        "confidence": conf,
+                        "box": [x1, y1, x2, y2],
+                        "track_id": effective_track_id,
+                        "source": "combined"
+                    })
 
                 # Apply hysteresis for missing detections unconditionally across every camera frame
                 if cam_id in self.yolo_hysteresis:
@@ -931,6 +956,7 @@ class MotionOptimizedEngine:
                                 detections_found.append({
                                     "name": CLASS_NAMES[data["cls_id"]],
                                     "conf": data["conf"],
+                                    "confidence": data.get("confidence", data["conf"]),
                                     "box": data["box"],
                                     "track_id": data["track_id"],
                                     "source": "combined_hysteresis"

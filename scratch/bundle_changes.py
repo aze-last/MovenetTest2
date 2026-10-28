@@ -35,6 +35,7 @@ files_to_pack = [
     "monitor_app/decision.py",
     "monitor_app/ai_engine.py",
     "tests/test_dynamic_contraband_tracking.py",
+    "tests/test_central_inference_pacing.py",
     "PLAN.md",
     "artifacts/installer/version.json"
 ]

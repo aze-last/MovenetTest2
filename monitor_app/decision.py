@@ -18,45 +18,60 @@ class ContrabandDismissalRegistry:
         self.ttl = ttl_seconds
         self._dismissed: Dict[str, Dict[Any, Dict[str, float]]] = {}
 
+    @staticmethod
+    def _normalize_tid(track_id: Any) -> str:
+        return str(track_id).strip()
+
     def dismiss_track(self, camera_id: Any, track_id: Any):
-        if track_id is None or track_id == -1:
+        if track_id is None or str(track_id) in ("-1", "", "None"):
             return
         cam_str = str(camera_id)
+        tid_norm = self._normalize_tid(track_id)
         now = time.time()
         with self.lock:
             if cam_str not in self._dismissed:
                 self._dismissed[cam_str] = {}
-            self._dismissed[cam_str][track_id] = {
+            entry = {
                 "dismissed_at": now,
                 "last_seen": now
             }
-            logger.info(f"Contraband detection dismissed: cam={cam_str} track_id={track_id}", camera_id=cam_str)
+            self._dismissed[cam_str][tid_norm] = entry
+            self._dismissed[cam_str][track_id] = entry
+            logger.info(f"Contraband detection dismissed: cam={cam_str} track_id={tid_norm}", camera_id=cam_str)
 
     def is_track_dismissed(self, camera_id: Any, track_id: Any) -> bool:
-        if track_id is None or track_id == -1:
+        if track_id is None or str(track_id) in ("-1", "", "None"):
             return False
         cam_str = str(camera_id)
+        tid_norm = self._normalize_tid(track_id)
         now = time.time()
         with self.lock:
             cam_map = self._dismissed.get(cam_str)
-            if not cam_map or track_id not in cam_map:
+            if not cam_map:
                 return False
-            entry = cam_map[track_id]
+            entry = cam_map.get(tid_norm) or cam_map.get(track_id)
+            if not entry:
+                return False
             if now - entry["last_seen"] > self.ttl:
-                del cam_map[track_id]
+                cam_map.pop(tid_norm, None)
+                cam_map.pop(track_id, None)
                 return False
             return True
 
     def touch_track(self, camera_id: Any, track_id: Any):
         """Update last_seen timestamp to sustain dismissal while object remains visible."""
-        if track_id is None or track_id == -1:
+        if track_id is None or str(track_id) in ("-1", "", "None"):
             return
         cam_str = str(camera_id)
+        tid_norm = self._normalize_tid(track_id)
         now = time.time()
         with self.lock:
             cam_map = self._dismissed.get(cam_str)
-            if cam_map and track_id in cam_map:
-                cam_map[track_id]["last_seen"] = now
+            if cam_map:
+                if tid_norm in cam_map:
+                    cam_map[tid_norm]["last_seen"] = now
+                if track_id in cam_map:
+                    cam_map[track_id]["last_seen"] = now
 
     def prune_stale(self, ttl: float = None):
         max_ttl = ttl if ttl is not None else self.ttl

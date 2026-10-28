@@ -121,3 +121,39 @@ def test_central_inference_in_flight_pacing():
 
     manager.clear_task_in_flight(cam_id)
     assert manager.has_in_flight_task(cam_id) is False
+
+
+def test_multi_object_batch_tracking_stability():
+    """
+    Verify that when multiple objects appear simultaneously (e.g. vape + glare),
+    updating them in batch mode preserves BOTH track IDs stably without churn.
+    """
+    from monitor_app.ai_engine import DynamicContrabandTracker
+
+    tracker = DynamicContrabandTracker(iou_thresh=0.25, max_lost_frames=15)
+    cam_id = "3"
+
+    # Frame 1: Two objects present
+    boxes_f1 = [[50, 50, 100, 100], [200, 200, 300, 300]]
+    confs_f1 = [0.85, 0.75]
+    cls_f1 = [1, 1]
+
+    tracks_f1 = tracker.update(cam_id, boxes_f1, confs_f1, cls_f1)
+    assert len(tracks_f1) == 2
+    id_1 = tracks_f1[0]["track_id"]
+    id_2 = tracks_f1[1]["track_id"]
+    assert id_1 != id_2
+
+    # Verify both conf and confidence exist in results
+    assert "conf" in tracks_f1[0]
+    assert "confidence" in tracks_f1[0]
+    assert tracks_f1[0]["conf"] == 0.85
+    assert tracks_f1[0]["confidence"] == 0.85
+
+    # Frames 2-10: Both objects sustain with small jitter
+    for i in range(10):
+        boxes_fi = [[50 + (i % 2), 50, 100, 100], [200, 200 + (i % 2), 300, 300]]
+        tracks_fi = tracker.update(cam_id, boxes_fi, confs_f1, cls_f1)
+        assert len(tracks_fi) == 2
+        curr_ids = {t["track_id"] for t in tracks_fi}
+        assert curr_ids == {id_1, id_2}, f"Track IDs must not churn! Expected {{ {id_1}, {id_2} }}, got {curr_ids}"

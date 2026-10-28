@@ -77,6 +77,20 @@ class CameraFusion:
         with self.lock:
             return self.active_zone_events.get((zone_id, event_type))
 
+    def clear_zone_events(self, zone_id: Optional[str] = None, camera_id: Optional[str] = None):
+        """Clears active zone events on operator dismissal so new detections can trigger fresh alerts."""
+        with self.lock:
+            if zone_id is None and camera_id is not None:
+                zone_id = self.resolve_zone(str(camera_id))
+            if zone_id:
+                keys_to_del = [k for k in self.active_zone_events if k[0] == zone_id]
+                for k in keys_to_del:
+                    del self.active_zone_events[k]
+                logger.info(f"Active zone events cleared for zone={zone_id}")
+            else:
+                self.active_zone_events.clear()
+                logger.info("All active zone events cleared")
+
     def _prune_expired_events(self, current_time: float):
         """Internal helper to clean up old inactive zone events."""
         expired = [

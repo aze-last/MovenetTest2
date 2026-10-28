@@ -317,7 +317,7 @@ class CentralInferenceManager:
         for det in self._contraband_for_render(detections):
             name = det.get("name", "Unknown")
             track_id = det.get("track_id", -1)
-            conf = float(det.get("confidence", 0.0))
+            conf = float(det.get("conf", det.get("confidence", 0.0)))
             x1, y1, x2, y2 = map(int, det.get("box", [0, 0, 0, 0]))
 
             is_dismissed = bool(det.get("dismissed"))
@@ -871,6 +871,38 @@ class CentralInferenceManager:
                 continue
             except Exception as e:
                 logger.error(f"worker loop error: {e}")
+                try:
+                    if 'task' in locals() and task:
+                        task.result = packet if 'packet' in locals() else None
+                        if hasattr(task, 'event'):
+                            task.event.set()
+                    if 'packet' in locals() and packet:
+                        self.clear_task_in_flight(packet.camera_id)
+                    self.task_queue.task_done()
+                except Exception:
+                    pass
+
+    def _populate_dropped_packet_continuity(self, packet: EvidencePacket) -> None:
+        """Preserve detection continuity and overlays on dropped queue frames (backpressure).
+        Prevents display stuttering/flicker by carrying over recent stable detections."""
+        cam_id = packet.camera_id
+        with self.result_lock:
+            last_m = self.last_movenet_results.get(cam_id, {})
+            last_y = self.last_yolo_results.get(cam_id, {})
+
+            packet.num_people = last_m.get("num_people", 0)
+            packet.alert_triggered = bool(last_m.get("alert_triggered", False) or last_y.get("alert_triggered", False))
+            packet.alerts = list(last_m.get("alerts", [])) + list(last_y.get("alerts", []))
+            contraband = list(last_y.get("detections", {}).get("contraband", []))
+            behavior = list(last_m.get("detections", {}).get("behavior", []))
+            packet.detections = {
+                "behavior": behavior,
+                "contraband": contraband,
+            }
+            packet.tracked_persons = list(last_m.get("tracked_persons", []))
+
+            if packet.frame is not None and contraband:
+                self._draw_contraband_boxes(packet.frame, contraband, camera_id=cam_id)
 
     def submit_task(self, packet: EvidencePacket) -> EvidencePacket:
         """
@@ -898,6 +930,7 @@ class CentralInferenceManager:
                     # Release dropped task immediately returning unprocessed packet
                     dropped_task.result = dropped_task.packet
                     dropped_task.packet.processing_mode = "Queue Drop (Backpressure)"
+                    self._populate_dropped_packet_continuity(dropped_task.packet)
                     
                     from monitor_app.monitor_logging import SystemEvents, get_performance_monitor
                     get_performance_monitor().track_dropped_frame()
@@ -926,6 +959,7 @@ class CentralInferenceManager:
             # Timeout recovery
             task.result = packet
             packet.processing_mode = "Inference Timeout"
+            self._populate_dropped_packet_continuity(packet)
             
             # Retire context on timeout
             if packet.frame_uuid:
@@ -963,6 +997,7 @@ class CentralInferenceManager:
                     dropped_task = self.task_queue.get_nowait()
                     dropped_task.result = dropped_task.packet
                     dropped_task.packet.processing_mode = "Queue Drop (Backpressure)"
+                    self._populate_dropped_packet_continuity(dropped_task.packet)
                     
                     from monitor_app.monitor_logging import SystemEvents, get_performance_monitor
                     get_performance_monitor().track_dropped_frame()

@@ -1092,7 +1092,7 @@ class CameraMonitorScreen(ttk.Frame):
         self.active_alert_camera_id = str(camera_id)
         if contraband_ids:
             self.active_alert_contraband_ids = list(contraband_ids)
-        elif not hasattr(self, "active_alert_contraband_ids"):
+        else:
             self.active_alert_contraband_ids = []
 
         # Start continuous beating audio alert loop until dismissed
@@ -1145,15 +1145,25 @@ class CameraMonitorScreen(ttk.Frame):
             pass
 
         # 2. Register dismissal for the active contraband track IDs on this camera
+        cam_id = getattr(self, "active_alert_camera_id", None)
         try:
             from monitor_app.decision import get_dismissal_registry
             reg = get_dismissal_registry()
-            cam_id = getattr(self, "active_alert_camera_id", None)
             if cam_id:
                 for tid in getattr(self, "active_alert_contraband_ids", []):
                     reg.dismiss_track(cam_id, tid)
         except Exception:
             pass
+
+        # 3. Clear active zone events so subsequent detections across cameras trigger cleanly
+        try:
+            from monitor_app.fusion import get_camera_fusion
+            if cam_id:
+                get_camera_fusion().clear_zone_events(camera_id=cam_id)
+        except Exception:
+            pass
+
+        self.active_alert_contraband_ids = []
 
         if self._alert_banner_visible:
             self.alert_banner_frame.pack_forget()
@@ -1721,10 +1731,17 @@ class CameraFeedWidget(ttk.Frame):
                     # Instead, push current frame directly into display queue (smooth 30 FPS display)
                     # while GPU processes the previous frame.
                     if manager.has_in_flight_task(str(self.camera_id)):
+                        pacing_frame = raw_frame.copy()
+                        with manager.result_lock:
+                            last_y = manager.last_yolo_results.get(str(self.camera_id), {})
+                            contraband = list(last_y.get("detections", {}).get("contraband", []))
+                        if contraband:
+                            manager._draw_contraband_boxes(pacing_frame, contraband, camera_id=str(self.camera_id))
+
                         cw = self.target_width
                         ch = self.target_height
-                        interp = cv2.INTER_AREA if (raw_frame.shape[1] > cw and raw_frame.shape[0] > ch) else cv2.INTER_LINEAR
-                        resized_bgr = cv2.resize(raw_frame, (cw, ch), interpolation=interp)
+                        interp = cv2.INTER_AREA if (pacing_frame.shape[1] > cw and pacing_frame.shape[0] > ch) else cv2.INTER_LINEAR
+                        resized_bgr = cv2.resize(pacing_frame, (cw, ch), interpolation=interp)
                         rgb = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB)
                         img_pil = Image.fromarray(rgb)
                         
@@ -1778,6 +1795,8 @@ class CameraFeedWidget(ttk.Frame):
                             img_pil = Image.fromarray(rgb)
                             
                             alert_desc = result_packet.alerts[0] if (getattr(result_packet, "alerts", None) and len(result_packet.alerts) > 0) else ""
+                            _cam_self.last_alert_triggered = alert_active
+                            _cam_self.last_alert_desc = alert_desc
                             if _cam_self.result_queue.full():
                                 try:
                                     _cam_self.result_queue.get_nowait()

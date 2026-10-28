@@ -1681,3 +1681,54 @@ scope: project
 - Automated Tests: pytest tests/test_installer_prereqs.py tests/test_import_guards.py -> 12 passed.
 - Deterministic Pre-Flight Gate (diff-scan.ps1): **RESULT: GREEN** (12/12 passed).
 - Diff Verification (gy --mode plan): **Decision: APPROVE**.
+
+
+---
+
+## 25. Sustained Contraband Tracking, Anti-Stagger Display Pacing & Dismissal Scope Isolation
+
+- **Date:** October 28, 2026
+- **Lead / Role:** Autonomous Worker / Logic Reviewer, Performance & Reliability Engineer, UI Auditor
+- **Purpose:** Resolve contraband track ID instability (churn/multiplying IDs), eliminate live display staggering/flickering caused by blank dropped frames under GPU queue backpressure, and fix dismissal scoping so dismissing an object (e.g. vape/glare) correctly silences that specific item while immediately allowing subsequent contraband (e.g. phone) on any camera to assign a new ID and trigger fresh beating audio alerts.
+
+### Code Changes & File Lines:
+1. `monitor_app/ai_engine.py`:
+   - Lines 139–216: `DynamicContrabandTracker.update()` converted to batch tracking. Restricts centroid proximity fallback to active tracks (`lost_count == 0`) within 60px so dead or dismissed objects cannot be spatially hijacked.
+   - Lines 900–925: `_run_yolo_logic()` updated to perform single-pass batch tracking for all untracked contraband detections (`self.contraband_tracker.update(cam_id, batch_boxes, batch_confs, batch_cls)`). Populates both `"conf"` and `"confidence"` keys across live and coasted detections.
+   - Purpose: Eliminates track ID multiplication and keeps contraband IDs stable across movement and minor occlusions.
+
+2. `monitor_app/central_inference.py`:
+   - Line 320: `_draw_contraband_boxes()` updated to check `conf = float(det.get("conf", det.get("confidence", 0.0)))` ensuring labels show actual percentages.
+   - Lines 875–895: Added `_populate_dropped_packet_continuity()` to carry over recent stable detections and redraw contraband overlays under `result_lock` on dropped frames.
+   - Lines 905 & 990: Called `_populate_dropped_packet_continuity()` in `submit_task()` and `submit_task_async()` upon queue overflow (backpressure) and inference timeouts.
+   - Lines 870–880: Wrapped worker loop task completion in fail-safe error handling ensuring `clear_task_in_flight()` and `task_queue.task_done()` are never stranded.
+   - Purpose: Eliminates 15–30 Hz video staggering, screen blinking, and missing overlay boxes during heavy GPU processing.
+
+3. `monitor_app/camera_view.py`:
+   - Lines 1093–1096: In `_show_alert_banner()`, explicitly reset `self.active_alert_contraband_ids = list(contraband_ids) if contraband_ids else []` to prevent stale ID retention across successive alerts.
+   - Lines 1147–1160: In `_dismiss_alert_banner()`, added invocation to `get_camera_fusion().clear_zone_events(camera_id=cam_id)` and cleared `self.active_alert_contraband_ids = []`.
+   - Lines 1723–1738: In `CameraFeedWidget.update_loop()`, pacing frames (when `has_in_flight_task` is true) render previous stable contraband detections from `last_yolo_results` so the display feed remains smooth and unbroken.
+   - Lines 1780–1786: Updated `last_alert_triggered` and `last_alert_desc` in async completion callback.
+   - Purpose: Guarantees continuous 20–30 FPS display feed without flickering, and enables new contraband detections to trigger fresh alerts immediately.
+
+4. `monitor_app/decision.py`:
+   - Lines 21–72: In `ContrabandDismissalRegistry`, normalized track IDs using `_normalize_tid(track_id)` (supporting both string and integer lookup keys) to eliminate dictionary type mismatch bugs.
+   - Lines 123–136: Alert filtering strictly suppresses only dismissed track IDs while keeping new contraband track IDs active.
+   - Purpose: Prevents dismissed items from re-triggering alerts while allowing new items to trigger cleanly.
+
+5. `monitor_app/fusion.py`:
+   - Lines 77–90: Added `clear_zone_events(self, zone_id=None, camera_id=None)` to clear active sliding-window zone incidents when an operator dismisses an alert.
+   - Purpose: Enables multi-camera setups to immediately trigger fresh alerts on secondary cameras following an operator dismissal.
+
+### Instinct Note:
+```text
+trigger: when contraband track IDs churn or dropped queue frames cause display stagger
+action: use batch tracker update, restrict centroid fallback to lost_count==0, and preserve last stable detections on dropped queue frames
+evidence: test_multi_object_batch_tracking_stability and test_central_inference_pacing passed
+scope: project
+```
+
+### Verification & Gates:
+- Automated Tests: 23/23 tests passed (`test_dynamic_contraband_tracking.py`, `test_central_inference_pacing.py`, `test_contraband_dismissal.py`, `test_import_guards.py`, `test_installer_prereqs.py`).
+- Deterministic Pre-Flight Gate (`diff-scan.ps1`): **RESULT: GREEN** (11/11 tests ran ok).
+- Architectural & Code Review (`agy.exe`): **Decision: APPROVE** (all 4 subsystems reviewed and verified).

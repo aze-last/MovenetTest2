@@ -10,16 +10,309 @@ Gate-enforced stacks:
   - Go                 : gofmt -l + go test ./...
 Tool-missing and no-surface cases are explicitly NOTEd, never silently skipped.
 Exit 0 = GREEN. Exit 1 = BLOCK. The gate is FAIL-CLOSED: git enumeration errors can never produce a silent GREEN.
-Run from repo root:  powershell -NoProfile -ExecutionPolicy Bypass -File .\.agents\team\diff-scan.ps1 [-TestFilter <name>]
+Run from repo root:  powershell -NoProfile -ExecutionPolicy Bypass -File .\.agents\team\diff-scan.ps1 [-TestFilter <name>] [-GateOnly]
 TestFilter is honored by:artisan --filter, pnpm test -- <name>, pytest -k, cargo test <name>, go test -run.
+-GateOnly runs the allowlist/denied-file/secret/pnpm/destructive gate and exits before any
+linter or test. run-verifier.ps1 uses it so no gate logic is duplicated.
 #>
-param([string]$TestFilter = "")
+param([string]$TestFilter = "", [switch]$GateOnly)
 
 $script:fail = $false
 function Block([string]$m) { Write-Host "BLOCK: $m"; $script:fail = $true }
 function Note([string]$m)  { Write-Host "NOTE:  $m" }
 function Report([string]$m){ Write-Host "GATE:  $m" }
 function Has-Tool([string]$n) { return [bool](Get-Command $n -ErrorAction SilentlyContinue) }
+
+# ---------------------------------------------------------------------------
+# Fail-closed repository allowlist + secret/credential gate.
+# This runs before any linter/test (and before any verifier/model call).
+# Default deny: missing allowlist, missing repo identity, or no matching entry
+# aborts immediately. Findings never print the suspected secret value.
+# ---------------------------------------------------------------------------
+
+function Normalize-RepoPath([string]$p) {
+    if ([string]::IsNullOrWhiteSpace($p)) { return "" }
+    $x = $p.Trim().TrimEnd([char[]]@('\', '/'))
+    $x = $x -replace '\\', '/'
+    if ($x -match '^[A-Za-z]:') {
+        $x = $x.Substring(0, 1).ToLowerInvariant() + $x.Substring(1)
+    }
+    return $x.ToLowerInvariant()
+}
+
+function Normalize-Remote([string]$r) {
+    if ([string]::IsNullOrWhiteSpace($r)) { return "" }
+    $x = $r.Trim().TrimEnd([char[]]@('\', '/'))
+    $x = $x -replace '\.git$', ''
+    return $x.ToLowerInvariant()
+}
+
+function Get-RepoRoot {
+    $out = @(git rev-parse --show-toplevel 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $out.Count -eq 0 -or [string]::IsNullOrWhiteSpace($out[0])) {
+        return $null
+    }
+    return $out[0].Trim()
+}
+
+function Get-RepoRemotes {
+    $result = @()
+    $names = @(git remote 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $result }
+    foreach ($name in $names) {
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        $urls = @(git remote get-url --all $name 2>$null)
+        foreach ($url in $urls) {
+            if (-not [string]::IsNullOrWhiteSpace($url)) { $result += $url.Trim() }
+        }
+    }
+    return $result
+}
+
+function Assert-RepoAllowed {
+    $allowlist = if ($env:REPO_ALLOWLIST -and $env:REPO_ALLOWLIST.Trim() -ne "") {
+        $env:REPO_ALLOWLIST
+    } else {
+        Join-Path (Get-Location) ".agents/team/repo-allowlist.txt"
+    }
+    if (-not (Test-Path -LiteralPath $allowlist -PathType Leaf)) {
+        Block "REPO_ALLOWLIST not found at $allowlist - default deny (no verifier/model call)."
+        return $false
+    }
+
+    $root = Get-RepoRoot
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        Block "Cannot determine the repository root - default deny."
+        return $false
+    }
+
+    $normRoot = Normalize-RepoPath $root
+    $normRemotes = @(Get-RepoRemotes | ForEach-Object { Normalize-Remote $_ } | Where-Object { $_ -ne "" } | Select-Object -Unique)
+    $entries = @(Get-Content -LiteralPath $allowlist -Encoding UTF8 |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -ne "" -and -not $_.StartsWith("#") })
+
+    if ($entries.Count -eq 0) {
+        Block "REPO_ALLOWLIST is empty at $allowlist - default deny."
+        return $false
+    }
+
+    $allowed = $false
+    foreach ($entry in $entries) {
+        if ($entry -match '^path\s*:\s*(.+)$') {
+            if ((Normalize-RepoPath $Matches[1]) -eq $normRoot) { $allowed = $true; break }
+        } elseif ($entry -match '^remote\s*:\s*(.+)$') {
+            $needle = Normalize-Remote $Matches[1]
+            if ($normRemotes -contains $needle) { $allowed = $true; break }
+        } else {
+            if ((Normalize-RepoPath $entry) -eq $normRoot) { $allowed = $true; break }
+            $needle = Normalize-Remote $entry
+            if ($normRemotes -contains $needle) { $allowed = $true; break }
+        }
+    }
+
+    if (-not $allowed) {
+        Block "Repository not allowlisted (default deny). Root: $root. Add 'path:$root' or a matching 'remote:<url>' to $allowlist."
+        return $false
+    }
+    Note "Repository allowlisted: $root"
+    return $true
+}
+
+$script:BinaryExtensions = @(
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tif', '.tiff',
+    '.pdf', '.zip', '.gz', '.tgz', '.tar', '.7z', '.rar', '.xz', '.bz2',
+    '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.pyc', '.pyo', '.class',
+    '.jar', '.war', '.mp3', '.mp4', '.mov', '.avi', '.mkv', '.wav', '.flac',
+    '.woff', '.woff2', '.ttf', '.otf', '.eot', '.sqlite', '.sqlite3', '.db',
+    '.xls', '.xlsx', '.doc', '.docx', '.ppt', '.pptx', '.psd', '.blend'
+)
+
+function Test-BinaryFile([string]$path) {
+    $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
+    if ($script:BinaryExtensions -contains $ext) { return $true }
+    try {
+        $full = (Get-Item -LiteralPath $path -ErrorAction Stop).FullName
+        $fs = [System.IO.File]::OpenRead($full)
+        try {
+            $buf = New-Object byte[] 8000
+            $n = $fs.Read($buf, 0, $buf.Length)
+            for ($i = 0; $i -lt $n; $i++) {
+                if ($buf[$i] -eq 0) { return $true }
+            }
+        } finally {
+            $fs.Close()
+        }
+    } catch {
+        return $true
+    }
+    return $false
+}
+
+function Test-PathHasSegment([string]$path, [string]$segment) {
+    $p = ($path -replace '\\', '/').Trim('/')
+    if ($p -eq $segment) { return $true }
+    if ($p -like "$segment/*") { return $true }
+    if ($p -like "*/$segment/*") { return $true }
+    if ($p -like "*/$segment") { return $true }
+    return $false
+}
+
+function Test-DeniedFile([string]$path) {
+    $p = ($path -replace '\\', '/')
+    $leaf = [System.IO.Path]::GetFileName($p)
+
+    # Environment templates are safe; every other .env* file is denied.
+    if ($leaf -match '^\.env\.(example|sample|template|dist)$') { return $null }
+    if ($leaf -like '.env*') { return 'environment file' }
+
+    if ($leaf -match '^appsettings(\..+)?\.json$') { return 'application settings (may contain credentials)' }
+    if ($leaf -match '^id_(rsa|ed25519|ecdsa|dsa)') { return 'SSH private key' }
+    if ($leaf -match '\.(pem|key|pfx|p12|jks|keystore|ppk|kdbx|ovpn)$') { return 'private key / credential container' }
+    if ($leaf -match '^(credentials|secrets?)(\..+)?$') { return 'credentials file' }
+    if ($leaf -match '^(service-account|service_account).*\.json$') { return 'service account key' }
+    if ($leaf -match '^\.?(npmrc|pypirc|netrc|git-credentials)$') { return 'credential config' }
+    if ($leaf -match '^terraform\.tfstate(\..*)?$' -or $leaf -like '*.tfvars' -or $leaf -like '*.tfvars.json') { return 'terraform state/vars (may contain secrets)' }
+    if ($leaf -eq 'package-lock.json' -or $leaf -eq 'yarn.lock' -or $leaf -eq 'bun.lockb') { return 'non-pnpm lockfile' }
+    if ($leaf -like '*.sqlite' -or $leaf -like '*.sqlite3' -or $leaf -like '*.db') { return 'binary database' }
+    if ($leaf -like '*.dump' -or $leaf -like '*.bak') { return 'database dump/backup' }
+
+    if ($leaf -like '*.sql') {
+        if ($p -match '(^|/)(migrations?|migrate|db/migrate)/') { return $null }
+        if ($leaf -match 'migrat') { return $null }
+        return 'SQL dump/export (may contain sensitive data)'
+    }
+
+    if (Test-PathHasSegment $p 'storage') { return 'storage directory' }
+    if (Test-PathHasSegment $p '.aws' -and $leaf -eq 'credentials') { return 'AWS credentials' }
+    if (Test-PathHasSegment $p '.ssh') { return 'SSH directory' }
+    if (Test-PathHasSegment $p '.kube' -and $leaf -eq 'config') { return 'Kubernetes config' }
+    if (Test-PathHasSegment $p '.docker' -and $leaf -eq 'config.json') { return 'Docker credential config' }
+
+    return $null
+}
+
+$script:SecretRules = @(
+    [pscustomobject]@{ Name = 'private-key'; Pattern = '-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----' },
+    [pscustomobject]@{ Name = 'aws-access-key'; Pattern = '\b(?:AKIA|ASIA)[0-9A-Z]{16}\b' },
+    [pscustomobject]@{ Name = 'aws-secret-key'; Pattern = '(?i)aws_secret_access_key\s*[:=]\s*["'']?[A-Za-z0-9/+=]{40}' },
+    [pscustomobject]@{ Name = 'github-token'; Pattern = '\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b' },
+    [pscustomobject]@{ Name = 'slack-token'; Pattern = '\bxox[baprs]-[A-Za-z0-9-]{10,}\b' },
+    [pscustomobject]@{ Name = 'google-api-key'; Pattern = '\bAIza[0-9A-Za-z\-_]{35}\b' },
+    [pscustomobject]@{ Name = 'stripe-key'; Pattern = '\b(?:sk|rk)_live_[0-9A-Za-z]{24,}\b' },
+    [pscustomobject]@{ Name = 'openai-style-key'; Pattern = '\bsk-[A-Za-z0-9_-]{32,}\b' },
+    [pscustomobject]@{ Name = 'jwt'; Pattern = '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b' },
+    [pscustomobject]@{ Name = 'connection-string-password'; Pattern = '(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/@]+:[^@\s]+@' },
+    [pscustomobject]@{ Name = 'secret-assignment'; Pattern = '(?i)\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|refresh[_-]?token|password|passwd)\b\s*[:=]\s*["''][A-Za-z0-9_\-./+=]{16,}["'']' }
+)
+
+$script:SecretFindingKeys = @{}
+$script:ScannedLines = New-Object System.Collections.Generic.List[string]
+
+function Test-PlaceholderSecret([string]$text) {
+    return ($text -match '(?i)(example|sample|placeholder|dummy|fake|redacted|changeme|change[_-]?me|your[_-]|x{3,}|<[^>]+>|\$\{[^}]+\}|%[A-Z_]+%|os\.environ|process\.env|getenv|env\.get|secret[_-]?manager|vault)')
+}
+
+function Get-AddedLineRecords([string]$file) {
+    $records = @()
+    $newLine = 0
+    $diff = @(git diff HEAD -U0 -- $file 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Block "git diff -U0 failed for $file (exit $LASTEXITCODE) - fail-closed."
+        return $records
+    }
+    foreach ($line in $diff) {
+        if ($line -match '^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@') {
+            $newLine = [int]$Matches[1]
+        } elseif ($line -match '^\+(?!\+\+)') {
+            $records += [pscustomobject]@{ Line = $newLine; Text = $line.Substring(1) }
+            $newLine++
+        } elseif ($line -match '^ ') {
+            $newLine++
+        }
+    }
+    return $records
+}
+
+function Get-FileLineRecords([string]$file) {
+    $records = @()
+    $lines = @(Get-Content -LiteralPath $file -Encoding UTF8 -ErrorAction SilentlyContinue)
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $records += [pscustomobject]@{ Line = ($i + 1); Text = [string]$lines[$i] }
+    }
+    return $records
+}
+
+function Find-SecretFindings([string]$file, $records) {
+    if ($null -eq $records) { return }
+    foreach ($rec in @($records)) {
+        if ($null -eq $rec) { continue }
+        $text = [string]$rec.Text
+        if ($text -eq '') { continue }
+        if ($script:ScannedLines.Count -lt 200000) {
+            $script:ScannedLines.Add("$file`:$($rec.Line): $text")
+        }
+        if (Test-PlaceholderSecret $text) { continue }
+        foreach ($rule in $script:SecretRules) {
+            if ($text -match $rule.Pattern) {
+                $key = "$file`:$($rec.Line):$($rule.Name)"
+                if (-not $script:SecretFindingKeys.ContainsKey($key)) {
+                    $script:SecretFindingKeys[$key] = $true
+                    Block "$file`:$($rec.Line) - potential secret ($($rule.Name)); value not printed."
+                }
+                break
+            }
+        }
+    }
+}
+
+function Invoke-GitleaksText([string]$label, [string]$text) {
+    if (-not (Has-Tool "gitleaks")) { return }
+    if ([string]::IsNullOrWhiteSpace($text)) { return }
+    $tmp = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($tmp, $text, (New-Object System.Text.UTF8Encoding($false)))
+        & gitleaks detect --no-git --source $tmp --redact --no-banner *> $null
+        $code = $LASTEXITCODE
+        # gitleaks: 0 = clean, 1 = leaks found, anything else = scanner error.
+        if ($code -eq 1) {
+            Block "gitleaks reported potential secrets in $label (values redacted); see repo-relative file:line from the regex scan above."
+        } elseif ($code -ne 0) {
+            Block "gitleaks failed on $label (exit $code) - fail-closed."
+        }
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-SecretContentGate {
+    # Tracked changes: added lines only (existing untouched content is not re-reviewed).
+    foreach ($f in @($files)) {
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+        if (Test-BinaryFile $f) { Note "Skipped binary content scan: $f"; continue }
+        Find-SecretFindings $f @(Get-AddedLineRecords $f)
+    }
+    # Untracked files: the whole file is new content.
+    foreach ($f in @($untracked)) {
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+        if (Test-BinaryFile $f) { Note "Skipped binary content scan: $f"; continue }
+        Find-SecretFindings $f @(Get-FileLineRecords $f)
+    }
+    # PLAN.md is the build contract and is always scanned in full.
+    if (Test-Path -LiteralPath "PLAN.md" -PathType Leaf) {
+        if (Test-BinaryFile "PLAN.md") {
+            Block "PLAN.md is binary - fail-closed."
+        } else {
+            Find-SecretFindings "PLAN.md" @(Get-FileLineRecords "PLAN.md")
+        }
+    }
+    # Optional stronger oracle. The regex rules above are the always-on fallback.
+    if (Has-Tool "gitleaks") {
+        Invoke-GitleaksText "diff+PLAN.md" ($script:ScannedLines -join "`n")
+    } else {
+        Note "gitleaks not installed - regex secret fallback used (diff added lines + PLAN.md)."
+    }
+}
 
 # Per-stack exit report state (n/a = marker absent, never enforced)
 $LarLint = "n/a"; $LarTest  = "n/a"
@@ -46,7 +339,15 @@ function Test-AddedLines([string]$file, [string[]]$lines) {
     }
 }
 
-# 1. Change-set acquisition (FAIL-CLOSED)
+# 1. Repository allowlist gate (FAIL-CLOSED, before any model call)
+#    Default deny: missing/empty allowlist, or no path/remote match, aborts here.
+Write-Host "--- Repository Allowlist Gate ---"
+if (-not (Assert-RepoAllowed)) {
+    Write-Host "RESULT: BLOCK"
+    exit 1
+}
+
+# 2. Change-set acquisition (FAIL-CLOSED)
 #    Tracked changes   : git diff HEAD --name-only
 #    Untracked files   : git ls-files --others --exclude-standard  (ALWAYS included - untracked
 #                        violating files can no longer escape the ban check)
@@ -76,16 +377,18 @@ if ($LASTEXITCODE -ne 0) {
 
 $allFiles = @($files + $untracked | Select-Object -Unique)
 
-# 1a. Banned files anywhere in the change set (secrets, binary DBs, foreign lockfiles)
-$bannedPatterns = @(".env*", "*.sqlite", "*.sqlite3", "*.db", "package-lock.json", "yarn.lock", "bun.lockb")
+# 2a. Denied files anywhere in the change set.
+#     Covers secrets, credential containers, binary DBs, SQL dumps, and foreign lockfiles.
 foreach ($f in $allFiles) {
-    if ($f -eq ".env.example") { continue }
-    foreach ($pat in $bannedPatterns) {
-        if ($f -like $pat) { Block "$f in change set -- banned from commit (secrets, binary DB, or non-pnpm lockfile)." }
-    }
+    $reason = Test-DeniedFile $f
+    if ($reason) { Block "$f in change set -- denied ($reason)." }
 }
 
-# 2. Strict PNPM + destructive-op scan on added content
+# 2b. Secret content gate (diff added lines + untracked text + full PLAN.md).
+#     Runs before any linter/test and before the verifier/model call. Never prints values.
+Invoke-SecretContentGate
+
+# 3. Strict PNPM + destructive-op scan on added content
 #    Tracked files: scan added lines from git diff -U0. Untracked files: whole file is new content.
 foreach ($f in $files) {
     if (-not (Test-Path $f)) { continue } # deleted file - name already banned-checked above
@@ -101,7 +404,19 @@ foreach ($f in $untracked) {
     Test-AddedLines $f $added
 }
 
-# 3. Linter Gate (per-stack detection; every detected stack's linter runs independently)
+# 3a. Gate-only mode (used by run-verifier): exit before any linter/test execution.
+if ($GateOnly) {
+    Write-Host "--- Gate Report ---"
+    Report "GATE-ONLY: allowlist + denied-file + secret + pnpm/destructive checks."
+    if ($script:fail) {
+        Write-Host "RESULT: BLOCK"
+        exit 1
+    }
+    Write-Host "RESULT: GREEN"
+    exit 0
+}
+
+# 4. Linter Gate (per-stack detection; every detected stack's linter runs independently)
 Write-Host "--- Linter Gate ---"
 
 # 3a. Laravel -- Pint
@@ -192,10 +507,10 @@ if (Test-Path "go.mod") {
     }
 }
 
-# 4. Test Gate (per-stack; narrower first when changed test files are known)
+# 5. Test Gate (per-stack; narrower first when changed test files are known)
 Write-Host "--- Test Gate ---"
 
-# 4a. Laravel -- artisan test
+# 5a. Laravel -- artisan test
 if (Test-Path "artisan") {
     if (Has-Tool "php") {
         if ($TestFilter -ne "") {
@@ -217,7 +532,7 @@ if (Test-Path "artisan") {
     }
 }
 
-# 4b. Node / TypeScript -- pnpm test
+# 5b. Node / TypeScript -- pnpm test
 if ($pkgTest) {
     if (Has-Tool "pnpm") {
         if ($TestFilter -ne "") { pnpm test -- $TestFilter } else { pnpm test }
@@ -228,7 +543,7 @@ if ($pkgTest) {
     }
 }
 
-# 4c. Python -- pytest (narrower by changed tests/**.py or root test_*.py; uv-preferred)
+# 5c. Python -- pytest (narrower by changed tests/**.py or root test_*.py; uv-preferred)
 if ((Test-Path "pyproject.toml") -or (Test-Path "requirements.txt")) {
     $pyTests = @($allFiles | Where-Object { $_ -match "^tests?[/\\].*\.py$" -or ($_ -like "test_*.py") })
     $localPytest = if (Test-Path ".venv310\Scripts\pytest.exe") { ".venv310\Scripts\pytest.exe" }
@@ -263,7 +578,7 @@ if ((Test-Path "pyproject.toml") -or (Test-Path "requirements.txt")) {
     }
 }
 
-# 4d. Flutter -- flutter test (narrower by changed test/**_test.dart)
+# 5d. Flutter -- flutter test (narrower by changed test/**_test.dart)
 if (Test-Path "pubspec.yaml") {
     if ((Has-Tool "flutter") -and (Has-Tool "dart")) {
         $flTests = @($allFiles | Where-Object { $_ -match "^test[/\\].*_test\.dart$" })
@@ -280,7 +595,7 @@ if (Test-Path "pubspec.yaml") {
     }
 }
 
-# 4e. Rust -- cargo test
+# 5e. Rust -- cargo test
 if (Test-Path "Cargo.toml") {
     if (Has-Tool "cargo") {
         if ($TestFilter -ne "") { cargo test $TestFilter } else { cargo test }
@@ -291,7 +606,7 @@ if (Test-Path "Cargo.toml") {
     }
 }
 
-# 4f. Go -- go test ./...
+# 5f. Go -- go test ./...
 if (Test-Path "go.mod") {
     if (Has-Tool "go") {
         if ($TestFilter -ne "") { go test -run $TestFilter ./... } else { go test ./... }
@@ -302,14 +617,14 @@ if (Test-Path "go.mod") {
     }
 }
 
-# 5. No-surface honesty note (only when the repo matches NO supported stack)
+# 6. No-surface honesty note (only when the repo matches NO supported stack)
 $surfaceMarkers = @("artisan", "package.json", "pyproject.toml", "requirements.txt", "pubspec.yaml", "Cargo.toml", "go.mod")
 $foundSurfaces = @($surfaceMarkers | Where-Object { Test-Path $_ })
 if ($foundSurfaces.Count -eq 0) {
     Note "No supported stack surface found -> lint/test gates skipped by design (see .agents/rules.md)."
 }
 
-# 6. Gate Report (definitive per-stack states for the coder report)
+# 7. Gate Report (definitive per-stack states for the coder report)
 Write-Host "--- Gate Report ---"
 Report "LARAVEL : lint=$LarLint | test=$LarTest"
 Report "NODE/TS : lint=$NodeLint | test=$NodeTest"
