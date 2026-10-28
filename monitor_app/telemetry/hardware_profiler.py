@@ -35,13 +35,13 @@ class HardwareProfiler:
                 profile["gpu"] = torch.cuda.get_device_name(0)
                 profile["cuda"] = torch.version.cuda or "Available"
             profile["torch"] = torch.__version__
-        except ImportError:
+        except (ImportError, OSError, Exception):
             pass
 
         try:
             import tensorflow as tf
             profile["tensorflow"] = tf.__version__
-        except ImportError:
+        except (ImportError, OSError, Exception):
             pass
 
         # 2. Get CPU Name (Windows WMI fallback)

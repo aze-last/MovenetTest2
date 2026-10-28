@@ -7,7 +7,7 @@ from monitor_app.monitor_logging.logger import get_module_logger
 try:
     import torch
     TORCH_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError, Exception):
     TORCH_AVAILABLE = False
 
 logger = get_module_logger("Performance")

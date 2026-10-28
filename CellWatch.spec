@@ -31,7 +31,7 @@ a = Analysis(
     hookspath=['hooks'],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch.utils.tensorboard', 'tensorboard', 'tensorflow', 'tensorflow_hub', 'tf2onnx'],
+    excludes=['torch.utils.tensorboard', 'tensorboard', 'tensorflow', 'tensorflow_hub', 'tf2onnx', 'polars', 'keras'],
     noarchive=False,
     optimize=0,
 )

@@ -1,67 +1,48 @@
-# PLAN.md — Beating Sound Alert Loop & Sustained Contraband ID Dismissal Monitoring
+# PLAN.md — Phase 1: PyInstaller .spec Excludes & Top-Level Import Hardening
 
 ## 1. Spec & Objective
-- **Problem:**
-  1. **Transient Audio Alarm:** Currently, when an alert fires, `SoundAlertManager` plays a single brief beep. If the operator is attending to other tasks, this brief sound is easily missed. The operator requires a continuous rhythmic "beating" heartbeat pulse that loops persistently until dismissed.
-  2. **False Positives from Light Sources & Alert Storms:** Stationary light-emitting objects (lights, reflections, glares, shiny surfaces) are frequently classified as `cellphone`. When the operator clicks "Dismiss", the UI banner closes for a fraction of a second, but on the very next frame, the same light source triggers `DECISION_TRIGGER` and `INCIDENT_START` all over again. The operator cannot dismiss that specific light source while it remains in view.
-- **Solution & Invariants:**
-  1. **Continuous Beating Audio Loop:** `SoundAlertManager` provides a thread-safe, non-blocking beating heartbeat pulse loop (`start_beating_loop`, `stop_beating_loop`) using native Windows `winsound.Beep` (double-thump cadence: 480 Hz / 440 Hz) that plays until the operator clicks "Dismiss".
-  2. **Sustained Contraband Tracking by ID:** Contraband detections maintain a stable ID (`track_id` from ByteTrack or spatial grid key for untracked items).
-  3. **ID-Specific Dismissal Registry:** Clicking "Dismiss" registers that `(camera_id, contraband_track_id)` as dismissed. While that specific ID continues to be seen or coasted within hysteresis TTL, it is suppressed from re-triggering alert banners or audio beeps.
-  4. **New Detection Trigger Invariant:** If a *new* contraband detection with a different ID appears (or on another camera), it is NOT in the dismissed registry and immediately fires a new detection alert message and restarts the beating sound loop.
-  5. **Visual Distinction:** Sustained dismissed items are rendered with muted styling (`[DISMISSED]`, gray border) so operators maintain visual observability without alarm fatigue.
-  6. **Rule 8 (Dependency Freeze):** Zero new pip dependencies. Uses Python standard library `winsound` and `threading`.
+- **Problem:** CellWatch's packaged PyInstaller distribution is excessively large (~7.0 GB uncompressed), packaging unused libraries like `polars` (157.6 MB) and heavyweight TensorFlow/Keras artifacts. Furthermore, unguarded top-level imports of PyTorch and TensorFlow can cause catastrophic runtime crashes on clean machines without full toolchains.
+- **Hypothesis:** Excluding `polars`, `keras`, `tensorboard`, and `tensorflow*` in `CellWatch.spec` while keeping `tensorrt` for GPU YOLO reduces the distribution footprint by >160 MB, and broadening top-level imports in telemetry/logging modules guarantees crash-free startup across heterogeneous environments.
+- **Invariants & Constraints:**
+  - Maintain `tensorrt` in the bundle for RTX 2050 GPU YOLO26s inference.
+  - Rule 8 (Dependency Freeze): No new packages or dependencies.
+  - Rule 10 (Secrets Hygiene): No tokens, keys, or credentials.
+  - Rule 9 (RTK Tooling): Strictly use `rtk` for commands.
 
 ---
 
 ## 2. Scoped Tasks
 
-### T1 — Beating Sound Loop in `SoundAlertManager`
-- **Surface:** `monitor_app/alert_manager.py`
-- **Scope:**
-  1. Add `_is_beating` flag, `_beating_thread`, and `_beating_lock` to `SoundAlertManager`.
-  2. Implement `start_beating_loop(alert_id=None)`: launches a daemon background thread that generates a rhythmic double-pulse heartbeat (`winsound.Beep(480, 80)` -> pause `0.06s` -> `winsound.Beep(440, 100)` -> pause `0.65s`).
-  3. Implement `stop_beating_loop()`: thread-safely sets `_is_beating = False` to terminate playback immediately.
-  4. Implement `is_beating() -> bool`.
-- **Test:** `tests/test_sound_alert_loop.py`
-- **Gate:** Tests pass verifying loop start, non-blocking execution, and immediate stop.
+### T1 — Update Installer Prerequisites Test (surface: tests/test_installer_prereqs.py)
+- **Files:** `tests/test_installer_prereqs.py`
+- **Scope:** Update tests to assert that `polars`, `keras`, `tensorboard`, and `tensorflow*` are explicitly listed in `CellWatch.spec`'s `excludes` array, while confirming that `tensorrt` remains included.
+- **Test:** Run `pytest tests/test_installer_prereqs.py` to produce a RED failing test prior to `.spec` edits.
+- **Gate:** Test fails initially on missing `polars` in `CellWatch.spec` excludes.
 
-### T2 — Sustained Contraband ID Tracking & Dismissal Registry
-- **Surface:** `monitor_app/decision.py`
+### T2 — Add Excludes to `CellWatch.spec` (surface: CellWatch.spec)
+- **Files:** `CellWatch.spec`
 - **Scope:**
-  1. Implement `ContrabandDismissalRegistry` singleton in `monitor_app/decision.py`:
-     - Tracks `dismissed_tracks: Dict[str, Dict[Any, float]]` mapping `camera_id -> {track_id: timestamp_dismissed}`.
-     - `dismiss_track(camera_id, track_id)`: registers dismissal.
-     - `is_track_dismissed(camera_id, track_id) -> bool`: checks if track is active in dismissal window (TTL = 15.0s from last sighting).
-     - `touch_track(camera_id, track_id)`: updates last seen timestamp for active dismissed track.
-     - `prune_stale()`: cleans up tracks not seen for > 15s.
-  2. In `DecisionEngine.evaluate_trigger(packet)`:
-     - Filters contraband detections against `ContrabandDismissalRegistry`.
-     - If all detected contraband items on the packet have been dismissed by the operator, suppress contraband trigger for this packet.
-     - If a *new* or un-dismissed contraband ID is present, allow trigger and return `True`.
-  3. Expose helper `get_dismissal_registry()`.
-- **Test:** `tests/test_contraband_dismissal.py`
-- **Gate:** Tests pass verifying sustained ID dismissal, suppression of dismissed contraband, and immediate triggering of new/different contraband IDs.
+  1. Add `'polars'` to `Analysis.excludes` (0 imports in `monitor_app`, saving 157.6 MB).
+  2. Add `'keras'`, `'tensorboard'`, `'tensorflow'`, `'tensorflow-cpu'`, `'tensorflow-hub'` to `Analysis.excludes`.
+  3. Ensure `'tensorrt'` is NOT excluded.
+- **Test:** Run `pytest tests/test_installer_prereqs.py` to turn GREEN.
+- **Gate:** `test_installer_prereqs.py` passes cleanly.
 
-### T3 — Camera View & Banner Integration
-- **Surface:** `monitor_app/camera_view.py`
+### T3 — Harden Top-Level Torch/TensorFlow Imports (surface: telemetry & logging)
+- **Files:**
+  - `monitor_app/monitor_logging/performance.py`
+  - `monitor_app/telemetry/collectors/system.py`
+  - `monitor_app/exporters/session_exporter.py`
+  - `monitor_app/telemetry/hardware_profiler.py`
 - **Scope:**
-  1. In `CameraMonitorScreen._show_alert_banner`:
-     - Collects `active_contraband_track_ids` from `ai_results` or `packet.detections`.
-     - Calls `get_sound_alert_manager().start_beating_loop(incident_id)`.
-  2. In `CameraMonitorScreen._dismiss_alert_banner`:
-     - Calls `get_sound_alert_manager().stop_beating_loop()`.
-     - Calls `get_dismissal_registry().dismiss_track(camera_id, tid)` for each active contraband track.
-  3. In `CameraMonitorScreen._review_active_incident` and `stop_monitoring`:
-     - Calls `get_sound_alert_manager().stop_beating_loop()`.
-  4. In `CameraFeedWidget` / BBox Drawing:
-     - Check `is_track_dismissed(camera_id, track_id)`. If dismissed, render label as `f"{name.upper()} [DISMISSED]"` with muted border color (`#64748b`).
-- **Test:** `tests/test_dismissal_ui_flow.py`
-- **Gate:** Tests pass verifying dismissal banner, sound stop, and track dismissal integration.
+  - Expand top-level `except ImportError:` blocks to `except (ImportError, OSError, Exception):` so missing DLLs, CUDA errors, or partial wheels on target machines never crash CellWatch.
+- **Test:** Unit test simulating missing/broken torch/tensorflow modules across these 4 files.
+- **Gate:** All 4 modules import cleanly without raising unhandled exceptions when torch/tensorflow are uninstalled or broken.
 
-### T4 — Mechanical Gate, Verification & Documentation
-- **Surface:** `capstone_progress_report.md`, `changes_today.zip`
-- **Scope:**
-  1. Run `diff-scan.ps1` (all tests GREEN).
-  2. Log all line numbers and purpose in `capstone_progress_report.md` (Section 22).
-  3. Bundle modified files in `changes_today.zip`.
+---
+
+## 3. Edge Cases & Safety
+- **GPU Inference Safety:** `tensorrt` must NOT be in `Analysis.excludes`, or YOLO GPU inference will fail at runtime.
+- **Polars Usage Audit:** Confirmed: `git grep "polars" monitor_app/` returns 0 matches. Safe to exclude.
+- **Mechanical Gate:** `.agents/team/diff-scan.ps1` must report `RESULT: GREEN`.
+- **Review Gate:** `agy --mode plan` must report `Decision: APPROVE` on `git diff`.

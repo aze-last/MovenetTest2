@@ -1641,3 +1641,43 @@ Obsidian vault `Feature_3_Stable_ID_Tracker` documents `max_distance: 50`; actua
      - Result: **`RESULT: GREEN`**.
   3. **Full Regression Test Suite (`pytest tests/`):**
      - Result: **`190 passed, 1 warning in 28.73s`** (100% test pass rate).
+
+---
+
+## 24. Layered Updates & PyInstaller Size Optimization (Phase 1: Spec Excludes & Import Hardening)
+
+- **Date:** October 28, 2026
+- **Lead / Role:** Autonomous Worker / Architecture Reviewer & Packaging Engineer
+- **Purpose:** Reduce uncompressed PyInstaller bundle size by excluding unused heavy modules (polars, keras, 	ensorboard, 	ensorflow*) while strictly preserving 	ensorrt for RTX 2050 GPU YOLO26s inference (Rule 8 & 9 compliance). Harden all top-level Torch/TensorFlow imports across telemetry and logging against missing DLLs, CUDA mismatches, or OS errors.
+
+### Code Changes & File Lines:
+1. CellWatch.spec:
+   - Line 34: Added 'polars' and 'keras' to Analysis.excludes.
+   - Purpose: Eliminates 157.6 MB of unused Polars dataframe binaries and avoids bundling unnecessary Keras runtime code.
+   - Preserves: 'tensorrt' explicitly retained to maintain GPU acceleration.
+
+2. 	ests/test_installer_prereqs.py:
+   - Lines 141–151: Updated 	est_pyinstaller_spec_dependencies to assert 'polars' and 'keras' are in CellWatch.spec excludes, and that 'tensorrt' is not excluded.
+
+3. Top-Level Import Hardening (Guarding except (ImportError, OSError, Exception):):
+   - monitor_app/monitor_logging/performance.py (lines 6–11): Guarded import torch.
+   - monitor_app/telemetry/collectors/system.py (lines 9–14): Guarded import torch.
+   - monitor_app/exporters/session_exporter.py (lines 34–38): Guarded import torch.
+   - monitor_app/telemetry/hardware_profiler.py (lines 32–46): Guarded import torch and import tensorflow as tf.
+   - Purpose: Prevents fatal app crashes on deployment targets where Windows VC++ redistributables, CUDA runtime DLLs, or optional ML frameworks fail to dynamically load.
+
+4. 	ests/test_import_guards.py:
+   - Added automated unit tests verifying safe behavior when 	orch or 	ensorflow raise ImportError, OSError, or RuntimeError.
+
+### Instinct Note:
+`	ext
+trigger: when PyInstaller bundles large third-party modules or top-level torch/tf imports fail
+action: add explicit spec excludes for polars/keras/tensorboard and catch (ImportError, OSError, Exception)
+evidence: saved 157.6 MB from polars, 4 collector files hardened, agy verified APPROVE
+scope: project
+`
+
+### Verification & Gates:
+- Automated Tests: pytest tests/test_installer_prereqs.py tests/test_import_guards.py -> 12 passed.
+- Deterministic Pre-Flight Gate (diff-scan.ps1): **RESULT: GREEN** (12/12 passed).
+- Diff Verification (gy --mode plan): **Decision: APPROVE**.

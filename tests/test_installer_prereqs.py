@@ -138,13 +138,15 @@ class TestInstallerPrereqs:
         with open(spec_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # TensorFlow excluded
+        # TensorFlow, Keras, Tensorboard, and Polars excluded to optimize build size
         assert "'tensorflow'" in content
         assert "'tensorflow_hub'" in content
         assert "'tf2onnx'" in content
+        assert "'polars'" in content
+        assert "'keras'" in content
 
-        # polars must NOT be excluded (ultralytics requires it)
-        assert "'polars'" not in content
+        # tensorrt must NOT be excluded (required for RTX 2050 GPU YOLO26s inference)
+        assert "'tensorrt'" not in content
 
         # platformdirs must be bundled in hiddenimports
         assert "'platformdirs'" in content
